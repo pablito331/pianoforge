@@ -81,9 +81,13 @@ src/standalone/    render roteirizado, --live na placa de áudio, teclado MIDI
 packaging/         bundle.py (empacotador .pforge) + fixture de teste
 tools/             os quatro harnesses de verificação, abaixo
 third_party/       miniz, stb, headers LV2 (vendorizados; ver NOTICE)
+assets/ui/         as quatro DejaVu (.ttf) que o painel carrega dentro do bundle
+scripts/           get_sfizz.sh — o único jeito de trazer sfizz pra este build
 docs/design/       o protótipo HTML que originou o painel
+.github/workflows/ release.yml: Linux + Windows + macOS no mesmo tag
 PIANOFORGE.md      a especificação do produto e as razões das regras
 UI-KIT.md          o contrato com o host e as regras da tela, para quem for editar a UI
+LICENSE / NOTICE   MIT e os terceiros vendorizados
 ```
 
 ## Verificação (sem DAW)
