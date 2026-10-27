@@ -1,0 +1,202 @@
+# Build, mede e publica o PianoForge para Linux, Windows e macOS.
+#
+# O que faz deste workflow algo diferente de "cmake && tar": nenhuma das tres
+# maquinas de CI tem um host LV2, um DAW, uma placa de audio ou um soundfont de
+# terceiros. Entao cada prova abaixo vem das ferramentas do proprio repo
+# (tools/), que encostam no plugin por dlopen e medem audio no offline:
+#
+#   A  suíte A-M  -- nada e carregado sem pedido, o load nunca roda dentro do
+#                   run(), o pedal nao descarta nota, o -1 devolve ao silencio
+#   B  --pedalload-- gate duro: nota muda = retorno != 0 (contado no backend)
+#   C  standalone -- renderiza WAV com o banco sintetico e confere pico/teto
+#   D  ui_probe   -- no Linux sob Xvfb: a janela pinta sem o host chamar idle()
+#   E  ui_preview -- offscreen nos tres: o painel continua desenhando
+#
+# Sem soundfont no repositorio (licenca) nem no runner: os bancos sao gerados por
+# tools/SynthBank.hpp na hora. O que so banco gravado prova (martelo, feltro,
+# ressonancia) continua sendo conferido a ouvido, nao aqui.
+
+name: build-and-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: ${{ matrix.slug }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: linux-x64
+            os: ubuntu-latest
+            libext: so
+            pkg: tar.gz
+          - slug: windows-x64
+            os: windows-latest
+            libext: dll
+            pkg: zip
+          # universal porque o mesmo painel tem de chegar aos dois chips, e o
+          # backend Cocoa nao usa API acima de 10.12 (deployment target 11.0 no
+          # CMakeLists). Os testes rodam no arch nativo do runner.
+          - slug: macos-universal
+            os: macos-latest
+            libext: dylib
+            pkg: tar.gz
+
+    env:
+      PLUGIN: build/pianoforge.lv2/pianoforge.${{ matrix.libext }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Nada de `submodules: recursive`: tsf.h, miniz, stb e os headers LV2 estao
+      # vendorizados no repo justamente para o build nao depender de rede.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependencias (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # libX11 + libXext: o backend X11 e o probe de janela (MIT-SHM).
+          # xvfb: a unica forma de abrir a UI de verdade num runner sem tela.
+          sudo apt-get install -y --no-install-recommends libx11-dev libxext-dev xvfb
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        if: runner.os != 'macOS'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (macOS, universal)
+        if: runner.os == 'macOS'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64'
+
+      # O configure tem de dizer o que entrou: sfizz e opcional e nenhum runner o
+      # tem, entao o artefato de CI e um SF2/.pforge completo sem SFZ. Se um dia
+      # aparecer "sfizz: ..." aqui, foi porque o runner passou a ter a lib.
+      - name: Build
+        run: cmake --build build --config Release -j 3
+
+      # No Windows todo binario sai com ".exe", e `./build/pforge_host_test` nao e o
+      # mesmo caminho. Resolver uma vez aqui, com o sufixo real do que existe, e mais
+      # honesto do que confiar no PATHEXT do shell de cada runner.
+      - name: Caminhos dos executaveis
+        run: |
+          for t in pforge_host_test pforge_dsp_stages pforge_standalone pforge_ui_preview pforge_ui_probe; do
+            exe="./build/$t"
+            [ -f "$exe" ] || exe="./build/$t.exe"
+            echo "EXE_$t=$exe" >> "$GITHUB_ENV"
+          done
+
+      - name: "A: suíte do plugin (nada auto-carrega, load fora do run(), pedal, status)"
+        run: |
+          "$EXE_pforge_host_test" --so "$PLUGIN" --bank-value -1 --makesf2 2 \
+            --bad nao_existe_de_verdade.sf2
+
+      - name: "B: nenhuma tecla muda com o pedal no ar"
+        run: "$EXE_pforge_dsp_stages" --makesf2 1 --pedalload --seconds 20
+
+      # O teste B acima e o unico que nao depende de medida diferencial de audio, e
+      # por isso o unico gate de "nota descartada". Aqui a pergunta e outra: o
+      # engine inteiro, do bank ao master, produz amostra nao-nula e nao satura.
+      - name: "C: render offline com o banco sintetico"
+        run: |
+          # Sem `| head`: o step roda com pipefail, e um head que fecha o pipe
+          # antes do fim da saida devolve 141 e reprova um build que estava bom.
+          "$EXE_pforge_dsp_stages" --makesf2 1 --sf2 synth0.sf2 --regions
+          "$EXE_pforge_standalone" --bank synth0.sf2 --feed "c4:250 e4:250 g4:250 -" \
+            --out render.wav | tee render.log
+          test -s render.wav
+          grep -E 'Teto cheio:  *0 amostras' render.log
+          awk '/Pico maximo/ { if ($3 + 0 < 0.01) { print "render saiu mudo: " $0; exit 1 } }' render.log
+
+      - name: "D: a UI pinta sem o host bombear idle() (X11 + Xvfb)"
+        if: runner.os == 'Linux'
+        run: |
+          # Xvfb em vez de xvfb-run: unicos requisitos sao o binario e um socket.
+          Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
+          XVFB=$!
+          for _ in $(seq 25); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+          DISPLAY=:99 ./build/pforge_ui_probe \
+            --so build/pianoforge.lv2/pianoforge_ui.so --noidle
+          RC=$?
+          kill "$XVFB" 2>/dev/null || true
+          exit $RC
+
+      - name: "E: preview offscreen do painel"
+        run: |
+          "$EXE_pforge_ui_preview" --state normal --status ready --presets 2 --preset 1 \
+            --out painel.ppm
+          test -s painel.ppm
+
+      - name: Empacota
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          case "$VERSION" in v*) ;; *) VERSION="ci-$(git rev-parse --short HEAD)" ;; esac
+          NAME="pianoforge-${VERSION}-${{ matrix.slug }}"
+          mkdir -p dist/"$NAME"
+          cp -r build/pianoforge.lv2 dist/"$NAME"/
+          for f in pforge_standalone pforge_standalone.exe; do
+            [ -f "build/$f" ] && cp "build/$f" dist/"$NAME"/
+          done
+          cp LICENSE NOTICE README.md dist/"$NAME"/
+          cd dist
+          if [ '${{ matrix.pkg }}' = 'tar.gz' ]; then
+            tar -czf "$NAME.tar.gz" "$NAME"
+          else
+            # cmake -E tar usa libarchive: mesmo zip nos tres sistemas, sem
+            # depender de 7z/zip que nem todo runner traz.
+            cmake -E tar cf "$NAME.zip" --format=zip -- "$NAME"
+          fi
+          cd ..
+          echo "ASSET=dist/$NAME.${{ matrix.pkg }}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pianoforge-${{ matrix.slug }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Publica a release
+    needs: build
+    runs-on: ubuntu-latest
+    # So tag publica. Em push de branch/PR o job de build roda e este nem aparece.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: baixados
+
+      - name: Cria a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          find baixados -type f | tee arquivos.txt
+          mapfile -a FILES < arquivos.txt
+          # Sem --generate-notes: o gh trata as duas opções de nota como excludentes,
+          # e um repo no primeiro tag nao tem historia nenhuma para "gerar" nota.
+          gh release create "$TAG" "${FILES[@]}" \
+            --title "PianoForge $TAG" \
+            --notes "Instale a pasta \`pianoforge.lv2\` em \`~/.lv2\` (Linux), \`~/Library/Audio/Plug-Ins/LV2\` (macOS) ou \`%APPDATA%\\\\LV2\` (Windows). O plugin abre mudo por decisao: registre seus soundfonts no painel e escolha um. Nada de soundfont vem junto -- questao de licenca, nao de espaco."

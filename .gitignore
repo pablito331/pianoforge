@@ -1,0 +1,45 @@
+# build
+build/
+build-*/
+out/
+dist/
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+
+# sfizz e outras dependências baixadas por script (nunca vendorizadas aqui)
+third_party/sfizz/
+third_party/*/build/
+.deps/
+
+# artefatos de teste: render, captura, bundle montado localmente
+*.wav
+*.ppm
+*.log
+*.lv2/
+packaging/fixture/out*/
+packaging/fixture/*.pforge
+!packaging/fixture/test.pforge
+!packaging/fixture/bad.pforge
+
+# som e bancos de trabalho do usuário — o repo não distribui soundfont
+*.sf2
+*.sf3
+*.sfz
+*.aiff
+*.aif
+*.flac
+*.ogg
+
+# o fixture do bundle é um SF2 sintético de 27 bytes gerado pelo empacotador,
+# não um banco: ele precisa estar no repo para o teste H rodar em CI
+!packaging/fixture/bank.sf2
+
+# editor / SO
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

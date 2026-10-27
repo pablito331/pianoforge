@@ -1,0 +1,63 @@
+PianoForge — third-party notices
+================================
+
+O PianoForge é MIT (ver `LICENSE`). Este arquivo cobre o código e os dados que
+**não** são nossos e que chegam junto no repositório ou no bundle instalado.
+
+Vendorizado em `third_party/` e `src/core/`
+-------------------------------------------
+
+third_party/miniz/miniz.{c,h}
+    miniz 3.0.0 — Rich Geldreich, Tenacious Software LLC; RAD Game Tools and
+    Valve Software. Licença dupla MIT / Unlicense; texto completo em
+    `third_party/miniz/LICENSE`. Usado só para **inflate** dos entries `.pforge`
+    comprimidos (`MINIZ_NO_ARCHIVE_APIS MINIZ_NO_TIME`).
+
+third_party/stb/stb_truetype.h, third_party/stb/stb_image.h
+    Sean Barrett / RAD Game Tools. Domínio público (com alternativa MIT — o texto
+    está no topo de cada header). Rasterização de glyph de fonte e decodificação
+    PNG/JPEG da arte do `.pforge`. Nota do próprio header: `stb_truetype` não
+    valida offsets do arquivo — não aponte para fontes de origem desconhecida.
+
+src/core/tsf.h
+    TinySoundFont v0.9 — Bernhard Schelling, baseado em SFZero (Steve Folta).
+    MIT / domínio público, texto no próprio header (bloco "LICENSE"). Backend
+    SF2. Modificações do PianoForge estão marcadas com `PIANOFORGE` no fonte.
+
+third_party/lv2/lv2/include/
+    Headers LV2 — Steve Harris, David Robillard e contribuidores. ISC
+    (`third_party/lv2/lv2/COPYING`). Só headers; nenhum código deles é linkado.
+    A cópia aqui é o subconjunto `include/` do checkout — sem docs, testes,
+    schemas ou arquivos de build do projeto upstream.
+
+Dependência externa (não vendorizada)
+-------------------------------------
+
+sfizz — https://sfz.studio — BSD-2-Clause. Backend de SFZ/SF3, linkado quando
+encontrado (`find_library`, ou `-DSFIZZ_DIR=<prefixo>`). Os termos BSD-2-Clause
+acompanham a instalação; quem distribui um binário que liga sfizz deve incluir o
+aviso de copyright e a lista de condições deles.
+
+Fontes em assets/ui/
+--------------------
+
+DejaVu Sans, DejaVu Sans Bold, DejaVu Serif e DejaVu Sans Mono — licença Bitstream
+Vera, que permite redistribuição e modificação **desde que o nome original seja
+preservado** em qualquer cópia ou derivado. Os arquivos são distribuídos sem
+renomear e as quatro vão para dentro de `pianoforge.lv2/` no bundle instalado.
+
+Soundfonts
+----------
+
+Nenhum banco **de ninguém** faz parte deste repositório nem do bundle do plugin. A
+lista de bancos do usuário nasce vazia e só contém o que ele registrar; um bundle
+`.pforge` distribuível só deve carregar conteúdo próprio, CC0, ou CC-BY com os
+créditos preenchidos em `manifest.credits[]`.
+
+As três exceções são todas geradas por script neste repo e não contêm gravação
+nenhuma: `packaging/fixture/bank.sf2` (27 bytes — um SF2 com hydra válido e zero
+amostra, para o teste H de banco inválido), `packaging/fixture/piano.png` (gradiente
+64×32, arte de fixture) e os bancos que `tools/SynthBank.hpp` escreve em tempo de
+teste com `--makesf2` (senoides sintetizadas, nunca gravadas). Esses três ficam em
+`packaging/fixture/`; o `.gitignore` bloqueia `*.sf2`/`*.wav`/`*.ppm` em qualquer
+outro lugar justamente para um banco de terceiros não entrar por acidente.

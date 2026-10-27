@@ -1,0 +1,215 @@
+@prefix atom:  <http://lv2plug.in/ns/ext/atom#> .
+@prefix doap:  <http://usefulinc.com/ns/doap#> .
+@prefix foaf:  <http://xmlns.com/foaf/0.1/> .
+@prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
+@prefix midi:  <http://lv2plug.in/ns/ext/midi#> .
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix urid:  <http://lv2plug.in/ns/ext/urid#> .
+@prefix worker: <http://lv2plug.in/ns/ext/worker#> .
+
+<https://pianoforge.audio/plugin>
+    a lv2:Plugin, lv2:InstrumentPlugin ;
+    doap:name "PianoForge" ;
+    doap:license <https://opensource.org/licenses/MIT> ;
+    lv2:optionalFeature lv2:hardRTCapable , worker:schedule ;
+    lv2:requiredFeature urid:map ;
+
+    lv2:port [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 0 ;
+        lv2:symbol "out_left" ;
+        lv2:name "Saída Esquerda"
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 1 ;
+        lv2:symbol "out_right" ;
+        lv2:name "Saída Direita"
+    ] , [
+        a atom:AtomPort, lv2:InputPort ;
+        atom:bufferType atom:Sequence ;
+        atom:supports midi:MidiEvent ;
+        lv2:index 2 ;
+        lv2:symbol "midi_in" ;
+        lv2:name "Entrada MIDI"
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 3 ;
+        lv2:symbol "volume" ;
+        lv2:name "Volume" ;
+        lv2:default 0.85 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 4 ;
+        lv2:symbol "hammer" ;
+        lv2:name "Ataque do Martelo" ;
+        lv2:default 0.35 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 5 ;
+        lv2:symbol "velCurve" ;
+        lv2:name "Curva de Dinâmica" ;
+        lv2:default 0.5 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 6 ;
+        lv2:symbol "sympRes" ;
+        lv2:name "Ressonância das Cordas" ;
+        lv2:default 0.25 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 7 ;
+        lv2:symbol "lid" ;
+        lv2:name "Abertura da Tampa" ;
+        lv2:default 1.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 8 ;
+        lv2:symbol "bassEQ" ;
+        lv2:name "Graves (EQ)" ;
+        lv2:default 0.5 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 9 ;
+        lv2:symbol "midEQ" ;
+        lv2:name "Médios (EQ)" ;
+        lv2:default 0.5 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 10 ;
+        lv2:symbol "highEQ" ;
+        lv2:name "Agudos (EQ)" ;
+        lv2:default 0.5 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 11 ;
+        lv2:symbol "chorus" ;
+        lv2:name "Chorus" ;
+        lv2:default 0.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 12 ;
+        lv2:symbol "reverb" ;
+        lv2:name "Reverb (Ambiência)" ;
+        lv2:default 0.10 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 13 ;
+        lv2:symbol "reverbType" ;
+        lv2:name "Tipo de Sala" ;
+        lv2:portProperty lv2:enumeration , lv2:integer ;
+        lv2:default 1 ;
+        lv2:minimum 0 ;
+        lv2:maximum 3 ;
+        lv2:scalePoint [ rdfs:label "Sala Pequena" ; rdf:value 0 ] ;
+        lv2:scalePoint [ rdfs:label "Salão de Estúdio" ; rdf:value 1 ] ;
+        lv2:scalePoint [ rdfs:label "Placa (Plate)" ; rdf:value 2 ] ;
+        lv2:scalePoint [ rdfs:label "Catedral" ; rdf:value 3 ] ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 14 ;
+        lv2:symbol "trimDb" ;
+        lv2:name "Ganho de Saída (Trim dB)" ;
+        lv2:default 0.0 ;
+        lv2:minimum -12.0 ;
+        lv2:maximum 12.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 15 ;
+        lv2:symbol "width" ;
+        lv2:name "Largura Estéreo" ;
+        lv2:default 1.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 2.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 16 ;
+        lv2:symbol "releaseDamp" ;
+        lv2:name "Amortecimento de Soltura" ;
+        lv2:default 0.35 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 17 ;
+        lv2:symbol "hammerTone" ;
+        lv2:name "Brilho do Martelo" ;
+        lv2:default 0.5 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 18 ;
+        lv2:symbol "sympTune" ;
+        lv2:name "Afinação da Ressonância" ;
+        lv2:default 0.5 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 19 ;
+        lv2:symbol "engineTune" ;
+        lv2:name "Afinação Global (Cents)" ;
+        lv2:default 0.0 ;
+        lv2:minimum -100.0 ;
+        lv2:maximum 100.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 20 ;
+        lv2:symbol "soundbank" ;
+        lv2:name "Banco de Piano" ;
+        lv2:portProperty lv2:integer ;
+        lv2:default -1 ;
+        lv2:minimum -1 ;
+        lv2:maximum 255 ;
+        lv2:scalePoint [ rdfs:label "Nenhum piano" ; rdf:value -1 ] ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 21 ;
+        lv2:symbol "preset" ;
+        lv2:name "Preset do Instrumento" ;
+        lv2:portProperty lv2:integer ;
+        lv2:default 0 ;
+        lv2:minimum 0 ;
+        lv2:maximum 1023 ;
+    ] , [
+        a lv2:ControlPort, lv2:OutputPort ;
+        lv2:index 22 ;
+        lv2:symbol "bankState" ;
+        lv2:name "Estado do Banco" ;
+        lv2:portProperty lv2:integer ;
+        lv2:minimum -4 ;
+        lv2:maximum 255 ;
+        lv2:scalePoint [ rdfs:label "Falha ao carregar" ; rdf:value -4 ] ;
+        lv2:scalePoint [ rdfs:label "Carregando" ; rdf:value -3 ] ;
+        lv2:scalePoint [ rdfs:label "Nenhum piano" ; rdf:value -2 ] ;
+    ] , [
+        a lv2:ControlPort, lv2:OutputPort ;
+        lv2:index 23 ;
+        lv2:symbol "presetCount" ;
+        lv2:name "Presets do Banco" ;
+        lv2:portProperty lv2:integer ;
+        lv2:default 0 ;
+        lv2:minimum 0 ;
+        lv2:maximum 1024 ;
+    ] .

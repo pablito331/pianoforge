@@ -1,0 +1,32 @@
+{
+  "produto": "PianoForge",
+  "versao": "1.0",
+  "formato": "pforge/1",
+  "presets": [
+    {
+      "nome": "Concert Grand",
+      "imagem": "piano.png",
+      "sf2": "bank.sf2",
+      "params": {
+        "volume": 0.8,
+        "hammer": 0.3,
+        "sympRes": 0.5,
+        "lid": 0.7,
+        "bassEQ": 0.5,
+        "midEQ": 0.5,
+        "highEQ": 0.5,
+        "chorus": 0.1,
+        "reverbType": 1,
+        "velocityCurve": 0.5,
+        "reverb": 0.25
+      }
+    }
+  ],
+  "credits": [
+    {
+      "autor": "fixture pr\u00f3pria",
+      "licenca": "CC0",
+      "fonte": "gerado localmente"
+    }
+  ]
+}
