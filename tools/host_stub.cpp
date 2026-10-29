@@ -1357,7 +1357,14 @@ int main(int argc, char** argv) {
             const long hwmBig = hwmKb();
             jCtl[pianoforge::Param_Count] = float(small);
             const int w2 = esperaPublicado(small);
-            const double rmsSmall = blocosJ(300);
+            // A janela que esta assercao mede: o menor ja foi publicado, o grande esta
+            // aposentado e o tick de 100 ms da thread de reserva vai solta-lo. 700
+            // blocos com o cochilo de 200 us dao ~200 ms de parede, o bastante para o
+            // free cair dentro. O esperaPublicado acima NAO entra na conta de proposito:
+            // ali quem pesa no run() e o parsing do banco na outra thread, que e outra
+            // pergunta (e que o check do maxMs, abaixo, cobre como teto de catastrofe).
+            const size_t marcoFree = temposJ.size();
+            const double rmsSmall = blocosJ(700);
             const long rssSmall = rssKb();
             const long hwmSmall = hwmKb();
 
@@ -1366,13 +1373,16 @@ int main(int argc, char** argv) {
             // assentaram antes do J (mutando o codigo para o jeito ingenuo, hwmBig e
             // hwmSmall deram ambos 144.700 kB e qualquer delta passaria em falso). A
             // assercao absoluta do pico esta no fim do main, junto do `memoria:`.
-            std::sort(temposJ.begin(), temposJ.end());
+            // 0,1% de 700 amostras e o indice do PIOR bloco: um free que vazasse para
+            // dentro do run() apareceria aqui com o custo inteiro do munmap.
+            std::vector<double> janelaFree(temposJ.begin() + long(marcoFree), temposJ.end());
+            std::sort(janelaFree.begin(), janelaFree.end());
             const double p999J =
-                temposJ.empty() ? 0.0 : temposJ[size_t(temposJ.size() * 0.999)];
+                janelaFree.empty() ? 0.0 : janelaFree[size_t(janelaFree.size() * 0.999)];
             const bool memMedida = rssBig >= 0 && rssSmall >= 0;
             const long alvoSmallKb = long(szOf(small) / 1024) * 2 + 96L * 1024;
             std::printf("J: sem worker | blocos ate o grande=%d ate o pequeno=%d  "
-                        "rms=%.6f/%.6f p99.9=%.3fms maxBlock=%.3fms  ",
+                        "rms=%.6f/%.6f p99.9(free)=%.3fms maxBlock(global)=%.3fms  ",
                         w1, w2, rmsBig, rmsSmall, p999J, maxMs);
             if (memMedida)
                 std::printf("RSS %ld->%ld kB  HWM %ld->%ld kB  alvo<%ld kB", rssBig, rssSmall,
@@ -1384,6 +1394,12 @@ int main(int argc, char** argv) {
             check(rmsBig > 0.001 && rmsSmall > 0.001,
                   "host sem worker: a thread de reserva entrega os dois pianos");
             check(p999J < 1.0, "host sem worker: libertar o banco velho nao pesou no run()");
+            // O load roda em outra thread, mas nao de graca: no Windows o pior bloco da
+            // janela de load mediu 0,8 ms, e um bloco denso de MIDI sem load nenhum
+            // (teste G) ja custa 1,3 ms na mesma maquina. Este teto e de catastrofe --
+            // pegar um parse que vazou para dentro do run() --, nao de orcamento: quem
+            // mede orcamento e a janela de free acima, onde a maquina esta em paz.
+            check(maxMs < 8.0, "host sem worker: o load da outra thread nao travou o run()");
             // "A RAM do banco grande voltou" e uma assercao de ESCALA, nao de caminho:
             // o malloc so devolve paginas ao kernel quando o bloco e grande o bastante
             // para ir por mmap. Com o banco sintetico de 3 MB o RSS nao se move um kB e a

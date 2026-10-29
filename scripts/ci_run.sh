@@ -36,8 +36,23 @@ if [ "$rc" -ne 0 ]; then
         line=${line//$'\r'/'%0D'}
         printf '::error title=%s::%s\n' "$name" "$line"
         matched=$((matched + 1))
-        [ "$matched" -ge 10 ] && break
+        [ "$matched" -ge 6 ] && break
     done < <(grep -E -i 'error|\[FALHA\]|falhou|undefined symbol|cannot ' "$log")
+
+    # Os numeros medidos, depois dos vereditos: uma falha de tempo ("p99.9 estourou")
+    # sem a linha que mediu o p99.9 nao diz se foi 1,05 ms ou 40 ms, e e essa diferenca
+    # que separa ruido do runner de regressao. As ultimas linhas, e nao as primeiras:
+    # a que interessa e a vizinha do teste que reprovou.
+    if [ "$matched" -lt 10 ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            line=${line//'%'/'%25'}
+            line=${line//$'\r'/'%0D'}
+            printf '::error title=%s::%s\n' "$name" "$line"
+            matched=$((matched + 1))
+            [ "$matched" -ge 10 ] && break
+        done < <(grep -E '^[A-Z][A-Za-z]?: ' "$log" | tail -5)
+    fi
 
     if [ "$matched" -eq 0 ]; then
         printf '::error title=%s::o passo falhou (codigo %s) e nao deixou linha de erro reconhecivel\n' \
