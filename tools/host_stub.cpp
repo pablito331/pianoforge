@@ -54,6 +54,22 @@
 
 namespace {
 
+// ---------------- orcamento de bloco ----------------
+// Quanto um bloco pode custar antes de a assercao reprovar. Nao e o orcamento de tempo
+// real (512 amostras a 44,1 kHz = 11,6 ms de audio por bloco): e o teto que separa
+// "o run() trabalhou" de "o run() esperou alguem". As duas bordas do numero:
+//   - embaixo: o ruido de um runner compartilhado, medido no CI do GitHub. Um bloco
+//     denso de 64 notas + 100 CC, SEM load nenhum (fase G), custa ate 1,36 ms la; o
+//     pior bloco da janela de load mediu 0,8 ms no Windows e 1,3 ms no macOS. O 1,0 ms
+//     que ficou aqui ate a estreia do CI era o chao de uma maquina ociosa, e reprovava
+//     a maquina -- nao o codigo.
+//   - em cima: o que se procura. Um load, um parsing ou um free que vazem para dentro
+//     do run() custam o preco de abrir ou de soltar um SF2 inteiro: dezenas de ms.
+//     Mesmo o banco pequeno do fixture, com 3 MB, custa um munmap da ordem de 1 ms.
+// 4 ms e ~3x o pior ruido medido e ~10x abaixo da menor regressao real, e fica em 1/3
+// do periodo do bloco -- um bloco que gasta 1/3 do proprio periodo ja nao e "custo".
+constexpr double kOrcamentoBlocoMs = 4.0;
+
 // ---------------- urid ----------------
 std::unordered_map<std::string, LV2_URID> g_urids;
 LV2_URID g_nextUrid = 1;
@@ -197,7 +213,7 @@ struct Result {
     double p50BlockMs = 0.0;
     double p90BlockMs = 0.0;
     double p99BlockMs = 0.0;
-    int lateBlocks = 0;          // blocos acima de 1 ms
+    int lateBlocks = 0;          // blocos acima do orcamento (kOrcamentoBlocoMs)
     int firstLateBlock = -1;     // posicao do pior: diz SE e a troca ou e ruina do disco
     // Falhas de pagina do proprio thread de audio no trecho. Depois de publicar um
     // banco de 1,2 GB o primeiro acorde toca pagina nunca vista, e cada fault e
@@ -433,7 +449,7 @@ int main(int argc, char** argv) {
             const double ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - t0).count();
             res.maxBlockMs = std::max(res.maxBlockMs, ms);
-            if (ms > 1.0) {
+            if (ms > kOrcamentoBlocoMs) {
                 ++res.lateBlocks;
                 if (res.firstLateBlock < 0) res.firstLateBlock = b;
             }
@@ -467,7 +483,7 @@ int main(int argc, char** argv) {
         res.p90BlockMs = pct(0.90);
         res.p50BlockMs = pct(0.50);
         res.lateBlocks = int(std::count_if(tempos.begin(), tempos.end(),
-                                           [](double ms) { return ms > 1.0; }));
+                                           [](double ms) { return ms > kOrcamentoBlocoMs; }));
         return res;
     };
 
@@ -536,7 +552,8 @@ int main(int argc, char** argv) {
     check(b.rms > 1e-3, "depois de escolher, sai som");
     check(worker.workCalls.load() >= 1, "o load rodou no worker");
     check(worker.ranOffMainThread.load(), "o load rodou em OUTRA thread");
-    check(bLoad.p999BlockMs < 1.0, "99,9% dos blocos cabaram em 1ms durante o load");
+    check(bLoad.p999BlockMs < kOrcamentoBlocoMs,
+          "99,9% dos blocos caibam no orcamento durante o load");
 
     // ---- Teste D: trocar vai e voltar ----
     const int workBefore = worker.workCalls.load();
@@ -552,7 +569,7 @@ int main(int argc, char** argv) {
                 workBefore, worker.workCalls.load(), wD1, wD2,
                 d1.minFaults, d2.minFaults);
     check(d1.rms > 1e-3 && d2.rms > 1e-3, "som continua depois de trocar na volta");
-    check(std::max(d1.p999BlockMs, d2.p999BlockMs) < 1.0,
+    check(std::max(d1.p999BlockMs, d2.p999BlockMs) < kOrcamentoBlocoMs,
           "swap A->B->A nunca bloqueou o run()");
 
     // ---- Teste H: escolhe um banco invalido, o que esta tocando continua ----
@@ -567,7 +584,8 @@ int main(int argc, char** argv) {
         std::printf("H: rms=%.6f p99.9=%.3fms maxBlock=%.3fms workCalls=%d blocosAteFalha=%d\n",
                     h.rms, hLoad.p999BlockMs, hLoad.maxBlockMs, worker.workCalls.load(), wH);
         check(h.rms > 1e-3, "banco invalido nao troca o piano que esta tocando");
-        check(hLoad.p999BlockMs < 1.0, "a recusa do banco invalido nao pesou no run()");
+        check(hLoad.p999BlockMs < kOrcamentoBlocoMs,
+              "a recusa do banco invalido nao pesou no run()");
     }
 
     // ---- Teste K: pedal de sustain ----
@@ -1051,7 +1069,8 @@ int main(int argc, char** argv) {
         check(sawReady && published == 0,
               "terminado o load, bankState passa a ser o indice publicado");
         check(presets >= 1.0f, "presetCount diz quantos presets o banco tem");
-        check(p999 < 1.0, "99,9% dos blocos cabem em 1 ms com o load no disco");
+        check(p999 < kOrcamentoBlocoMs,
+              "99,9% dos blocos cabem no orcamento com o load no disco");
 
         // Banco invalido: a porta reclama, mas nao silencia nem troca nada.
         if (!bads.empty()) {
@@ -1273,7 +1292,7 @@ int main(int argc, char** argv) {
     // ---- Teste J: host SEM lv2:worker (a thread de reserva faz tudo) -------
     // O outro modo do plugin: sem LV2_Worker_Schedule no instantiate, o load e a
     // liberacao do banco velho acontecem na loaderThread. Tres coisas aqui:
-    // (a) o som chega mesmo assim; (b) nenhum bloco estoura 1 ms -- o tsf_close de
+    // (a) o som chega mesmo assim; (b) nenhum bloco estoura o orcamento -- o tsf_close de
     // um banco grande e um munmap de dezenas de ms, e libertar dentro de run() era
     // exatamente o que o fallback antigo fazia no ping do retire; (c) ao trocar
     // para um banco MENOR a RSS cai de verdade, que e o proposito do pedido
@@ -1393,7 +1412,8 @@ int main(int argc, char** argv) {
                         size_t(szOf(small) / 1048576));
             check(rmsBig > 0.001 && rmsSmall > 0.001,
                   "host sem worker: a thread de reserva entrega os dois pianos");
-            check(p999J < 1.0, "host sem worker: libertar o banco velho nao pesou no run()");
+            check(p999J < kOrcamentoBlocoMs,
+                  "host sem worker: libertar o banco velho nao pesou no run()");
             // O load roda em outra thread, mas nao de graca: no Windows o pior bloco da
             // janela de load mediu 0,8 ms, e um bloco denso de MIDI sem load nenhum
             // (teste G) ja custa 1,3 ms na mesma maquina. Este teto e de catastrofe --

@@ -39,19 +39,24 @@ if [ "$rc" -ne 0 ]; then
         [ "$matched" -ge 6 ] && break
     done < <(grep -E -i 'error|\[FALHA\]|falhou|undefined symbol|cannot ' "$log")
 
-    # Os numeros medidos, depois dos vereditos: uma falha de tempo ("p99.9 estourou")
-    # sem a linha que mediu o p99.9 nao diz se foi 1,05 ms ou 40 ms, e e essa diferenca
-    # que separa ruido do runner de regressao. As ultimas linhas, e nao as primeiras:
-    # a que interessa e a vizinha do teste que reprovou.
+    # Os numeros medidos: uma falha de tempo ("p99.9 estourou") sem a linha que mediu o
+    # p99.9 nao diz se foram 4,1 ms ou 40 ms, e e essa diferenca que separa ruido do
+    # runner de regressao. O rastro do log inteiro, numa unica anotacao: as linhas de
+    # resumo nao tem posicao fixa -- a primeira versao pegava so as cinco ultimas
+    # ("G:", "I:", "J:"...) e num passo com dois testes reprovados a medida do que
+    # reprovou primeiro saia fora; no Windows o H caiu e o G, que tinha passado, ficou.
+    # 40 linhas e a vizinhanca dos vereditos, inclusive quando eles sao dois.
     if [ "$matched" -lt 10 ]; then
+        cauda=""
         while IFS= read -r line; do
-            [ -n "$line" ] || continue
+            line=${line%$'\r'}
+            line=${line:0:400}      # uma linha de compilador das longas nao inunda tudo
             line=${line//'%'/'%25'}
-            line=${line//$'\r'/'%0D'}
-            printf '::error title=%s::%s\n' "$name" "$line"
-            matched=$((matched + 1))
-            [ "$matched" -ge 10 ] && break
-        done < <(grep -E '^[A-Z][A-Za-z]?: ' "$log" | tail -5)
+            [ -n "$cauda" ] && cauda="$cauda%0A"
+            cauda="$cauda$line"
+        done < <(tail -40 "$log")
+        printf '::error title=%s (fim do log)::%s\n' "$name" "$cauda"
+        matched=$((matched + 1))
     fi
 
     if [ "$matched" -eq 0 ]; then
