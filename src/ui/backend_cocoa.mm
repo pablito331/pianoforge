@@ -481,7 +481,9 @@ void destroyUi(ForgeUi* ui) { delete static_cast<CocoaForgeUi*>(ui); }
 // Origem no TOPO, como a Surface e o hit-test.
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
-- (BOOL)acceptsFirstMouse:(NSEvent*) { return YES; }   // clicar no painel ja da foco
+// O nome do parametro e obrigatorio numa DEFINICAO de metodo: sem ele o clang para
+// em "expected identifier" no inicio do corpo. O seletor nao usa o evento para nada.
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { (void)event; return YES; }   // clicar no painel ja da foco
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
