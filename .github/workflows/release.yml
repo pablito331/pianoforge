@@ -110,7 +110,7 @@ jobs:
       # tem, entao o artefato de CI e um SF2/.pforge completo sem SFZ. Se um dia
       # aparecer "sfizz: ..." aqui, foi porque o runner passou a ter a lib.
       - name: Build
-        run: cmake --build build --config Release -j 3
+        run: bash scripts/ci_run.sh build cmake --build build --config Release -j 3
 
       # No Windows todo binario sai com ".exe", e `./build/pforge_host_test` nao e o
       # mesmo caminho. Pior: o gerador do Visual Studio (o default no runner Windows)
@@ -141,17 +141,19 @@ jobs:
           [ -n "$VST3" ] || { echo "o bundle PianoForge.vst3 nao foi montado"; exit 1; }
           echo "VST3=$VST3" >> "$GITHUB_ENV"
 
+      # Os passos que gateiam rodam por scripts/ci_run.sh: ele guarda a saida e, se o
+      # comando reprovar, republica as linhas de erro como anotacao. Nao e enfeite --
+      # sem isso a falha de um repo publico e so "exit code 1", porque o log do job
+      # exige login ate para ler (a API responde 403 para quem nao esta logado).
       - name: "A: suíte do plugin (nada auto-carrega, load fora do run(), pedal, status)"
         run: |
-          "$EXE_pforge_host_test" --so "$PLUGIN" --bank-value -1 --makesf2 2 \
-            --bad nao_existe_de_verdade.sf2
+          bash scripts/ci_run.sh a "$EXE_pforge_host_test" --so "$PLUGIN" \
+            --bank-value -1 --makesf2 2 --bad nao_existe_de_verdade.sf2
 
       - name: "B: nenhuma tecla muda com o pedal no ar"
-        # As aspas em volta do caminho sao do shell, nao do YAML: um escalar que
-        # comeca com " tem de terminar na aspa, e o texto depois dela derruba o
-        # workflow inteiro antes de existir job. Por isso o bloco, e nao a linha.
         run: |
-          "$EXE_pforge_dsp_stages" --makesf2 1 --pedalload --seconds 20
+          bash scripts/ci_run.sh b "$EXE_pforge_dsp_stages" --makesf2 1 --pedalload \
+            --seconds 20
 
       # O teste B acima e o unico que nao depende de medida diferencial de audio, e
       # por isso o unico gate de "nota descartada". Aqui a pergunta e outra: o
@@ -191,7 +193,8 @@ jobs:
       - name: "D2: o mesmo painel dentro de um HWND (Windows)"
         if: runner.os == 'Windows'
         run: |
-          "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe_ui --ui
+          bash scripts/ci_run.sh d2 "$EXE_pforge_vst3_probe" "$VST3" \
+            --work vst3probe_ui --ui
 
       - name: "E: preview offscreen do painel"
         run: |
@@ -204,7 +207,7 @@ jobs:
       # espera amostra nao-nula. O banco e gerado aqui, nada vem gravado.
       - name: "F: o VST3 responde a um host de verdade"
         run: |
-          "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe
+          bash scripts/ci_run.sh f "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe
 
       # pluginval e um host de terceiro e julga o que o nosso probe nao julga
       # (thread-safety, layout de barramento, automacao sem gesto). Ele NAO e
