@@ -4,8 +4,8 @@
 //   - nada e escolhido por voce no abrir: current_ = -1, nenhum valor e escrito
 //     na porta soundbank;
 //   - um clique na lista escreve o indice UMA vez (o plugin carrega no worker);
-//   - os 10 knobs visiveis escrevem nas portas 3..12; os 7 escondidos sao so
-//     texto no rodape, nunca controle arrastavel;
+//   - as portas 3..19 sao os 17 parametros, em duas paginas: os dez visiveis no
+//     TIMBRE e os sete do motor na aba MOTOR -- todos arrastaveis;
 //   - o nome no rodape e do piano que esta SOANDO (porta 22), nao do ultimo
 //     clicado: um arquivo que nao abriu nao muda o que se esta ouvindo.
 
@@ -54,8 +54,7 @@ void utf8Append(std::string& out, unsigned cp) {
     out += char(0x80 | (cp & 0x3F));
 }
 
-ForgeUi::ForgeUi(const std::string& bundlePath, LV2UI_Write_Function writeFn,
-                 LV2UI_Controller controller)
+ForgeUi::ForgeUi(const std::string& bundlePath, WriteFunction writeFn, void* controller)
     : write_(writeFn), controller_(controller), bundlePath_(bundlePath) {
     loadFonts(bundlePath);
 

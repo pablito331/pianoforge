@@ -113,16 +113,15 @@ namespace pfui {
 
 class CocoaForgeUi final : public ForgeUi {
 public:
-    // `parent` e o NSView que o host deu em ui:parent (ui.ttl, classe ui:CocoaUI:
-    // "the LV2_Widget is a pointer to a NSView"). Nulo = modo flutuante, e ai a
-    // janela e nossa.
+    // `parent` e a NSView do container que o host entregou em IPlugView::attached
+    // (kPlatformTypeNSView). Nulo = modo flutuante, e ai a janela e nossa.
     //
     // Este construtor toca AppKit, entao so e chamado na main thread -- que e onde
-    // os hosts de macOS instantiam a UI. Nao ha como garantir isso daqui: um host
-    // que instantiasse fora da main thread ja estaria violando AppKit antes de nos
-    // sermos criados.
-    CocoaForgeUi(NSView* parent, const std::string& bundlePath, LV2UI_Write_Function writeFn,
-                 LV2UI_Controller controller)
+    // os hosts de macOS criam a view. Nao ha como garantir isso daqui: um host que
+    // chamasse attached() fora da main thread ja estaria violando AppKit antes de
+    // nos sermos criados.
+    CocoaForgeUi(NSView* parent, const std::string& bundlePath, WriteFunction writeFn,
+                 void* controller)
         : ForgeUi(bundlePath, writeFn, controller), parent_(parent) {
         // Ha bomba de eventos (o run loop): ver ForgeUi::idle()/wakeOrDraw(), que com
         // isto ligado se recusam a desenhar na thread chamadora.
@@ -452,16 +451,15 @@ private:
 
 }  // namespace pfui
 
-// ---- fabrica host-agnostica (UiFactory.hpp) ----------------------------
-// Mesmo contrato dos backends Win32 e X11: o LV2 e o VST3 criam o painel aqui.
+// ---- fabrica do painel (UiFactory.hpp) --------------------------------
+// Mesmo contrato dos backends Win32 e X11.
 
 namespace pfui {
 
-// Como no X11, o resize nao passa por aqui: no Cocoa o painel e uma NSView que o
-// host redimensiona (a layer acompanha), e o descriptor pede o tamanho uma vez.
-ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut,
-                  const LV2UI_Resize* /*resize*/) {
+// O tamanho nao passa por aqui: no Cocoa o painel e uma NSView que o host
+// redimensiona (a layer acompanha), e quem declara 1000x520 e o IPlugView.
+ForgeUi* createUi(void* parent, const char* bundlePath, WriteFunction write,
+                  void* controller, void** widgetOut) {
     auto* ui = new CocoaForgeUi((__bridge NSView*)parent, bundlePath ? bundlePath : "", write,
                                 controller);
     if (!ui->widget()) {
@@ -581,82 +579,3 @@ void destroyUi(ForgeUi* ui) { delete static_cast<CocoaForgeUi*>(ui); }
     _ui->keyText(event.characters);
 }
 @end
-
-// ---- LV2 UI descriptor -------------------------------------------------
-
-namespace {
-
-pfui::CocoaForgeUi* uiFromHandle(LV2UI_Handle handle) {
-    return static_cast<pfui::CocoaForgeUi*>(handle);
-}
-
-LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
-                           const char*,
-                           const char* bundlePath,
-                           LV2UI_Write_Function writeFunction,
-                           LV2UI_Controller controller,
-                           LV2UI_Widget* widget,
-                           const LV2_Feature* const* features) {
-    NSView* parent = nil;
-    const LV2UI_Resize* resize = nullptr;
-    for (int i = 0; features && features[i]; ++i) {
-        if (!std::strcmp(features[i]->URI, LV2_UI__parent) && features[i]->data) {
-            // ui:parent "e geralmente do mesmo tipo que o LV2_Widget que a UI
-            // devolveria", e para ui:CocoaUI o LV2_Widget e o NSView*.
-            parent = (__bridge NSView*)features[i]->data;
-        } else if (!std::strcmp(features[i]->URI, LV2_UI__resize) && features[i]->data) {
-            resize = static_cast<const LV2UI_Resize*>(features[i]->data);
-        }
-    }
-
-    @autoreleasepool {
-        void* native = nullptr;
-        pfui::ForgeUi* ui = pfui::createUi((__bridge void*)parent, bundlePath, writeFunction,
-                                          controller, &native);
-        if (!ui) return nullptr;
-        *widget = (LV2UI_Widget)native;
-        if (resize && resize->ui_resize)
-            resize->ui_resize(resize->handle, pfui::ForgeUi::preferredWidth(),
-                              pfui::ForgeUi::preferredHeight());
-        return ui;
-    }
-}
-
-void uiCleanup(LV2UI_Handle handle) { pfui::destroyUi(uiFromHandle(handle)); }
-
-// A assinatura do typedef e (handle, port_index, BUFFER_SIZE, FORMAT, buffer)
-// -- third_party/lv2/lv2/include/lv2/ui/ui.h:200. Trocar buffer_size por format
-// compila igual e faz o guarda `format != 0` ver 4 em todo evento: nenhum
-// port_event chegaria ao painel. Conferir ordem no header, nunca na memoria.
-void uiPortEvent(LV2UI_Handle handle, uint32_t port, uint32_t bufferSize, uint32_t format,
-                 const void* buffer) {
-    uiFromHandle(handle)->portEvent(port, bufferSize, format, buffer);
-}
-
-int uiIdle(LV2UI_Handle handle) { return uiFromHandle(handle)->idle(); }
-int uiShow(LV2UI_Handle handle) { return uiFromHandle(handle)->show(); }
-int uiHide(LV2UI_Handle handle) { return uiFromHandle(handle)->hide(); }
-
-const LV2UI_Idle_Interface kIdleInterface = { uiIdle };
-const LV2UI_Show_Interface kShowInterface = { uiShow, uiHide };
-
-const void* uiExtensionData(const char* uri) {
-    if (!std::strcmp(uri, LV2_UI__idleInterface)) return &kIdleInterface;
-    if (!std::strcmp(uri, LV2_UI__showInterface)) return &kShowInterface;
-    return nullptr;
-}
-
-const LV2UI_Descriptor kDescriptor = {
-    "https://pianoforge.audio/plugin#ui",
-    uiInstantiate,
-    uiCleanup,
-    uiPortEvent,
-    uiExtensionData,
-};
-
-}  // namespace
-
-LV2_SYMBOL_EXPORT
-const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index) {
-    return (index == 0) ? &kDescriptor : nullptr;
-}

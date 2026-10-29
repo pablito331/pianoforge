@@ -2,9 +2,11 @@
 // As duas portas de SAIDA de estado, criadas porque a UI nao tem como saber o que
 // o plugin esta fazendo: "FORJANDO" era um chute do tamanho do arquivo.
 //
+// "Porta" aqui e o numero do EVENTO que o shell do VST3 entrega ao painel por
+// ForgeUi::portEvent: 3..21 sao os controles, 22/23 sao estas duas saidas
+// (format 0, float, como qualquer controle).
+//
 // Indices sao gravados em sessao de host -- nunca reordenar, so acrescentar depois.
-// O plugin escreve nelas no comeco do run() (sem alocação); o host repassa ao UI
-// por port_event com format 0 (float), igual a qualquer ControlPort de saida.
 
 #include <cstdint>
 

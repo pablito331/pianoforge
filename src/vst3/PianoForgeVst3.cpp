@@ -107,7 +107,7 @@ bool writeExact(Steinberg::IBStream* s, const void* src, Steinberg::int32 n) {
 constexpr Steinberg::int32 kStateMagic = 0x50465633;   // 'PFV3'
 constexpr Steinberg::int32 kStateVersion = 1;
 
-// write_() do painel chega aqui: os mesmos numeros de porta do LV2.
+// write_() do painel chega aqui: a numeracao de portas do proprio painel.
 void uiWriteThunk(void* controller, uint32_t port, uint32_t size, uint32_t format,
                   const void* buffer) {
     static_cast<PianoForgeProcessor*>(controller)->uiWrite(port, size, format, buffer);
@@ -163,7 +163,7 @@ Steinberg::tresult PLUGIN_API PianoForgeProcessor::initialize(Steinberg::FUnknow
             Steinberg::Vst::kRootUnitId, shortTitle));
     }
 
-    // Banco e preset: no LV2 sao porta e o painel e o unico controle. No VST3 o
+    // Banco e preset: no painel sao evento e o painel e o unico controle. No VST3 o
     // host precisa deles no estado e na automacao, e por isso viram parametro --
     // escondidos do painel generico, porque quem escolhe piano e o painel.
     parameters.addParameter(new Steinberg::Vst::RangeParameter(
@@ -351,7 +351,7 @@ float PianoForgeProcessor::plainOf(Steinberg::Vst::ParamID tag) const {
 }
 
 // ===========================================================================
-// carga de banco (a thread, no lugar do lv2:worker)
+// carga de banco (a thread, no lugar do worker que o host nao nos da)
 // ===========================================================================
 
 void PianoForgeProcessor::requestBank(int index) noexcept {
@@ -456,8 +456,8 @@ void PianoForgeProcessor::loadNow(int index, const std::string& path) {
             engine_.clearRetirePending();
         } else {
             // A thread de audio arma retirePending em beginBlock(). Com o
-            // transporte parado nao ha bloco nenhum: 300 ms e o mesmo teto do LV2
-            // -- assume o pico de RAM em vez de ficar "carregando" para sempre.
+            // transporte parado nao ha bloco nenhum: 300 ms e o teto que assume o
+            // pico de RAM em vez de ficar "carregando" para sempre.
             for (int i = 0; i < 3 && !engine_.retirePending(); ++i)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             engine_.freeRetiredBanks();
@@ -542,9 +542,9 @@ Steinberg::tresult PLUGIN_API PianoForgeProcessor::setState(Steinberg::IBStream*
         if (!readExact(state, &path[0], pathLen)) return Steinberg::kResultFalse;
     }
 
-    // Restaurar o estado e um pedido de som: diferente do LV2, onde o valor
-    // restaurado e so linha de base. Aqui o estado foi salvo pela nossa getState,
-    // entao quem abre a sessao espera o piano de volta.
+    // Restaurar o estado e um pedido de som: quem abre a sessao espera o piano
+    // de volta. O estado foi salvo pela nossa getState, e o plugin continua
+    // abrindo mudo quando nada foi restaurado.
     loadFailed_.store(false, std::memory_order_relaxed);
     loadInFlight_.store(true, std::memory_order_relaxed);
     if (!path.empty()) requestPath(path);
@@ -688,10 +688,10 @@ public:
                                                                : Steinberg::kResultFalse;
     }
 
-    // O host chamou attached() com o container dele: aqui o painel nasce, pela
-    // mesma fabrica do LV2. No Windows isto roda na thread que chamou o host e
-    // que e dona do HWND -- criar o filho de outra thread trava o processo (ver o
-    // topo de backend_win32.cpp).
+    // O host chamou attached() com o container dele: aqui o painel nasce. No
+    // Windows isto roda na thread que chamou o host e que e dona do HWND --
+    // criar o filho de outra thread trava o processo (ver o topo de
+    // backend_win32.cpp).
     void attachedToParent() override {
         if (ui_) return;
         void* native = nullptr;

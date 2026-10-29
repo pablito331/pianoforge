@@ -1,5 +1,5 @@
 // Renderiza o painel da forja offscreen e escreve PPM (converta com
-// `magick x.ppm x.png`). E o olho dentro da UI sem host LV2 instalado: eu leio
+// `magick x.ppm x.png`). E o olho dentro da UI sem host nenhum instalado: eu leio
 // o PNG de volta e julgo fonte, gradiente, arco de brasa e layout.
 //
 //   ./build/pforge_ui_preview --state loading --value hammer=0.9 --out /tmp/a.ppm

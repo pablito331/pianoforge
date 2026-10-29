@@ -8,14 +8,14 @@
 // Por que NAO ha thread propria, que e a decisao estrutural deste arquivo (e a
 // oposta do backend X11): um window pertence a thread que o criou, e no Windows
 // criar OU destruir um filho de uma janela de outra thread exige que essa outra
-// thread bombeie mensagens. O host chama instantiate() na thread dele e fica parado
-// ali esperando o retorno, entao a criacao travava: o probe pegou a thread da UI
-// presa em NtUserCreateWindowEx -- e, depois de WS_EX_NOPARENTNOTIFY, presa em
-// NtUserDestroyWindow no cleanup -- enquanto o instantiate nunca voltava para
-// devolver o HWND (o widget saia NULL e o painel nao abria de jeito nenhum).
+// thread bombeie mensagens. O host chama createView()->attached() na thread dele e
+// fica parado ali esperando o retorno, entao a criacao travava: o probe pegou a
+// thread da UI presa em NtUserCreateWindowEx -- e, depois de WS_EX_NOPARENTNOTIFY,
+// presa em NtUserDestroyWindow no removed() -- enquanto o attached() nunca voltava
+// para devolver o HWND (o widget saia NULL e o painel nao abria de jeito nenhum).
 //
-// Aqui tudo roda na thread que chama instantiate(), que e a dona do HWND recebido
-// em ui:parent: desenho no WM_PAINT e no idle(), input direto no WndProc,
+// Aqui tudo roda na thread que chama attached(), que e a dona do HWND recebido
+// como parent: desenho no WM_PAINT e no idle(), input direto no WndProc,
 // ShowWindow/SetFocus diretos. Um host que nunca chame idle() continua atendido,
 // porque o WM_PAINT chega pelo laco de mensagens dele; o que so um laco proprio
 // daria (animacao) e coberto por um timer de 33 ms armado apenas enquanto ha algo
@@ -124,11 +124,11 @@ namespace pfui {
 
 class Win32ForgeUi final : public ForgeUi {
 public:
-    Win32ForgeUi(HWND parent, const std::string& bundlePath, LV2UI_Write_Function writeFn,
-                 LV2UI_Controller controller, const LV2UI_Resize* resize)
-        : ForgeUi(bundlePath, writeFn, controller), parent_(parent), resize_(resize) {
+    Win32ForgeUi(HWND parent, const std::string& bundlePath, WriteFunction writeFn,
+                 void* controller)
+        : ForgeUi(bundlePath, writeFn, controller), parent_(parent) {
         // Sem thread propria: a janela nasce e morre na thread que chama
-        // instantiate(), que e a dona do HWND de ui:parent. Qualquer outra escolha
+        // attached(), que e a dona do HWND do container. Qualquer outra escolha
         // trava o host na criacao do filho (ver o comentario do topo do arquivo).
         // hasEventThread_ = false diz a ForgeUi que quem desenha e o idle()/WM_PAINT
         // desta thread, e nao um laco nosso.
@@ -226,8 +226,7 @@ protected:
         ShowWindow(win_, SW_SHOW);
         needDraw_ = true;
         // O host abre o editor quando a janela dele ja existe: e a segunda chance de
-        // um pedido de tamanho que caiu no vazio durante o instantiate.
-        pedirTamanho();
+        // adotar um container que cresceu entre o attached() e o show().
         seguirContainer();
     }
 
@@ -312,25 +311,14 @@ private:
     }
 
     // ---- tamanho: quem manda e o container do host -------------------------
-    // O REAPER 7.83 entrega ui:parent com 65x86 -- o tamanho do placeholder dele --
-    // e so aplica o ui:resize depois que o editor dele existe. Um pedido unico,
-    // feito dentro do instantiate, deixa o painel daquele tamanho para sempre: foi
-    // o que apareceu como "o LV2 abriu minusculo".
-    void pedirTamanho() {
-        if (!resize_ || !resize_->ui_resize) return;
-        ++pedidosDeTamanho_;
-        if (resize_->ui_resize(resize_->handle, kWinW, kWinH) != 0 && pedidosDeTamanho_ == 1)
-            log("o host recusou o tamanho do painel (ui:resize): o container fica no tamanho "
-                "que ele deu, e o painel se aperta nele");
-    }
-
-    // Um filho do Win32 nao acompanha o pai: aqui nao existe layout. Se o host cresce
-    // o container depois -- o REAPER cresce quando aplica o pedido, e um host que
-    // sobe a janela no show() cresce ainda mais tarde --, o nosso HWND continua do
-    // tamanho velho e o painel aparece espremido num canto. A cada tique lento o
-    // painel compara com o cliente do pai e adota o tamanho dele; enquanto o pai
-    // estiver menor que o design o pedido volta, tres vezes, que e o que cobre
-    // "agora", "no primeiro idle" e "quando o editor abriu".
+    // Um host entrega o container antes de ter o tamanho final: o REAPER 7.83, no
+    // Windows, abre o editor num placeholder de 65x86 e so depois aplica o tamanho
+    // real. Um painel que adota o tamanho visto na criacao e para fica espremido no
+    // canto para sempre -- foi o que apareceu como "o plugin abriu minusculo".
+    //
+    // Um filho do Win32 nao acompanha o pai: aqui nao existe layout. A cada tique
+    // lento o painel compara com o cliente do pai e adota o tamanho dele, quantas
+    // vezes o container mudar.
     void seguirContainer() {
         if (!parent_ || !win_) return;
         RECT rc{};
@@ -343,7 +331,6 @@ private:
             // WM_SIZE volta por esta mesma thread e o painel adota o tamanho la.
             SetWindowPos(win_, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
-        if ((w < kWinW || h < kWinH) && pedidosDeTamanho_ < 3) pedirTamanho();
     }
 
     // O pedido de dialogo nasce num handler de mouse/tecla e tem de ser executado
@@ -358,7 +345,7 @@ private:
         syncTimer();
     }
 
-    // Roda na thread que chama instantiate(), que e a dona de parent_.
+    // Roda na thread que chama attached(), que e a dona de parent_.
     void createWindow() {
         HINSTANCE mod = nullptr;
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -379,10 +366,11 @@ private:
         wc.lpszClassName = kPanelClass;
         RegisterClassExW(&wc);      // ERROR_CLASS_ALREADY_EXISTS e ok: 2a instancia
 
-        // Sem ui:parent (host "flutuante") o painel precisa de janela propria: filho
-        // de janela nula nao aparece em lugar nenhum. Nesse caso kWinW/kWinH sao o
-        // CLIENTE (o painel), entao a moldura entra por fora -- pedir 1000x520 de
-        // janela daria um cliente menor e o layout sairia apertado.
+        // Sem container (janela propria, que e o modo do probe) o painel precisa
+        // existir sozinho: filho de janela nula nao aparece em lugar nenhum. Nesse
+        // caso kWinW/kWinH sao o CLIENTE (o painel), entao a moldura entra por fora
+        // -- pedir 1000x520 de janela daria um cliente menor e o layout sairia
+        // apertado.
         const bool embedded = (parent_ != nullptr);
         int windowW = kWinW, windowH = kWinH;
         if (!embedded) {
@@ -392,12 +380,12 @@ private:
                 windowH = int(frame.bottom - frame.top);
             }
         }
-        // Se ui:parent vier de outra thread, criar o filho daqui trava o host (o
-        // Windows espera a thread dona bombear, e ela esta dentro de instantiate()).
+        // Se o container vier de outra thread, criar o filho daqui trava o host (o
+        // Windows espera a thread dona bombear, e ela esta dentro de attached()).
         // Nao ha o que consertar do nosso lado: registrar para o diagnostico acabar
         // em um segundo, e nao em um DAW congelado sem pista.
         if (embedded && GetWindowThreadProcessId(parent_, nullptr) != GetCurrentThreadId())
-            log("ui:parent pertence a outra thread: a criacao do painel pode travar");
+            log("o container pertence a outra thread: a criacao do painel pode travar");
         win_ = CreateWindowExW(0, kPanelClass, L"PianoForge - Forja de Pianos",
                                embedded ? DWORD(WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN)
                                         : DWORD(WS_OVERLAPPEDWINDOW),
@@ -420,10 +408,9 @@ private:
         ShowWindow(win_, embedded ? SW_SHOW : SW_SHOWNORMAL);
         needDraw_ = true;
         syncTimer();
-        // O pedido de tamanho sai daqui, e nao do descriptor do LV2: quem sabe qual
-        // container pode crescer e o backend, e o pedido PRECISA se repetir (ver
-        // seguirContainer()).
-        pedirTamanho();
+        // O container pode ter crescido entre a criacao e o show: adotar agora evita
+        // o primeiro frame no tamanho velho.
+        seguirContainer();
     }
 
     // Roda na thread que criou tudo: janela, DIB e DC.
@@ -591,21 +578,18 @@ private:
     wchar_t pendingSurrogate_ = 0;
     bool coMine_ = false;        // o CoInitializeEx desta thread foi nosso
     bool loggedDraw_ = false;
-    const LV2UI_Resize* resize_ = nullptr;   // ui:resize do host, se ele ofereceu
-    int pedidosDeTamanho_ = 0;               // teto: nao insistir num host que recusa
 };
 
 } // namespace pfui
 
-// ---- fabrica host-agnostica (UiFactory.hpp) ----------------------------
-// O LV2 e o VST3 entram por aqui: um caminho so para o painel existir.
+// ---- fabrica do painel (UiFactory.hpp) --------------------------------
 
 namespace pfui {
 
-ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut, const LV2UI_Resize* resize) {
+ForgeUi* createUi(void* parent, const char* bundlePath, WriteFunction write,
+                  void* controller, void** widgetOut) {
     auto* ui = new Win32ForgeUi(reinterpret_cast<HWND>(parent), bundlePath ? bundlePath : "",
-                                write, controller, resize);
+                                write, controller);
     if (!ui->widget()) {
         // Devolver um objeto sem HWND daria ao host uma area vazia para embutir e
         // um cleanup que passa pelo DestroyWindow de uma janela que nao existe.
@@ -620,87 +604,3 @@ ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function wri
 void destroyUi(ForgeUi* ui) { delete static_cast<Win32ForgeUi*>(ui); }
 
 } // namespace pfui
-
-// ---- LV2 UI descriptor -------------------------------------------------
-
-namespace {
-
-pfui::ForgeUi* uiFromHandle(LV2UI_Handle handle) {
-    return static_cast<pfui::ForgeUi*>(handle);
-}
-
-LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
-                           const char*,
-                           const char* bundlePath,
-                           LV2UI_Write_Function writeFunction,
-                           LV2UI_Controller controller,
-                           LV2UI_Widget* widget,
-                           const LV2_Feature* const* features) {
-    HWND parent = nullptr;
-    const LV2UI_Resize* resize = nullptr;
-    for (int i = 0; features && features[i]; ++i) {
-        if (!std::strcmp(features[i]->URI, LV2_UI__parent) && features[i]->data) {
-            // ui.ttl, classe ui:WindowsUI: "the LV2_Widget is not a pointer to a HWND
-            // but should be interpreted as an HWND itself" -- e o mesmo valor que o
-            // host entrega em ui:parent.
-            parent = reinterpret_cast<HWND>(reinterpret_cast<uintptr_t>(features[i]->data));
-        } else if (!std::strcmp(features[i]->URI, LV2_UI__resize) && features[i]->data) {
-            resize = static_cast<const LV2UI_Resize*>(features[i]->data);
-        }
-    }
-
-    void* native = nullptr;
-    // O resize vai para o backend, que e quem fala com o container: aqui e la o
-    // pedido nao pode ser um tiro unico -- ver Win32ForgeUi::seguirContainer().
-    pfui::ForgeUi* ui =
-        pfui::createUi(parent, bundlePath, writeFunction, controller, &native, resize);
-    if (!ui) return nullptr;
-    *widget = reinterpret_cast<LV2UI_Widget>(reinterpret_cast<uintptr_t>(native));
-    return ui;
-}
-
-void uiCleanup(LV2UI_Handle handle) { pfui::destroyUi(uiFromHandle(handle)); }
-
-// A assinatura do typedef e (handle, port_index, BUFFER_SIZE, FORMAT, buffer)
-// -- third_party/lv2/lv2/include/lv2/ui/ui.h:200. Os tres primeiros sao inteiros,
-// entao nomear ao contrario compila igual e faz o guarda `format != 0` ver o tamanho
-// do buffer (4): todo port_event do host seria descartado em silencio. Conferir
-// ordem no header, nunca na memoria.
-void uiPortEvent(LV2UI_Handle handle, uint32_t port, uint32_t bufferSize, uint32_t format,
-                 const void* buffer) {
-    auto* ui = uiFromHandle(handle);
-    ui->portEvent(port, bufferSize, format, buffer);
-    // Sem thread propria, ForgeUi::portEvent so registra o estado -- quem acorda o
-    // desenho e a janela. Sem este empurrao, um host que nunca chama idle() (o
-    // REAPER nunca chama) mostraria "FORJANDO" e a contagem de presets so no proximo
-    // clique, porque nada invalidou a area.
-    ui->nudge();
-}
-
-int uiIdle(LV2UI_Handle handle) { return uiFromHandle(handle)->idle(); }
-int uiShow(LV2UI_Handle handle) { return uiFromHandle(handle)->show(); }
-int uiHide(LV2UI_Handle handle) { return uiFromHandle(handle)->hide(); }
-
-const LV2UI_Idle_Interface kIdleInterface = { uiIdle };
-const LV2UI_Show_Interface kShowInterface = { uiShow, uiHide };
-
-const void* uiExtensionData(const char* uri) {
-    if (!std::strcmp(uri, LV2_UI__idleInterface)) return &kIdleInterface;
-    if (!std::strcmp(uri, LV2_UI__showInterface)) return &kShowInterface;
-    return nullptr;
-}
-
-const LV2UI_Descriptor kDescriptor = {
-    "https://pianoforge.audio/plugin#ui",
-    uiInstantiate,
-    uiCleanup,
-    uiPortEvent,
-    uiExtensionData,
-};
-
-} // namespace
-
-LV2_SYMBOL_EXPORT
-const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index) {
-    return (index == 0) ? &kDescriptor : nullptr;
-}

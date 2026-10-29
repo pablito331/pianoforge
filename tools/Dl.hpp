@@ -2,17 +2,17 @@
 // dlopen portavel para os harnesses de verificacao.
 //
 // Em Linux e macOS e o <dlfcn.h> de sempre. No Windows o mingw-w64 nao tem
-// <dlfcn.h> nem dl*, e sem isto o pforge_host_test -- a UNICA prova de que o load
-// de um banco nunca roda dentro de run(), e de que nada e carregado sem pedido --
-// simplesmente nao compilaria la, e o CI publicaria o .dll sem uma medida de audio
-// nenhuma. Vinte linhas de shim valem mais que uma suíte pulada.
+// <dlfcn.h> nem dl*, e sem isto o pforge_vst3_probe -- a prova de que nada e
+// carregado sem pedido e de que o load nunca roda dentro de run() -- simplesmente
+// nao compilaria la, e o CI publicaria o .vst3 sem uma medida de audio nenhuma.
+// Vinte linhas de shim valem mais que uma suite pulada.
 //
 // So o que os harnesses usam: abrir, achar um simbolo, fechar, e o ultimo erro.
 
 #if defined(_WIN32)
 
 // O MSVC define min/max como MACRO em <windows.h> quando NOMINMAX nao existe. Os
-// harnesses usam std::min/std::max depois deste include (host_stub e vst3_probe),
+// harnesses usam std::min/std::max depois deste include (vst3_probe e dsp_stages),
 // e a macro transforma `std::max(a, b)` em lixo de sintaxe. O mingw esconde o
 // problema porque so define as macros em alguns modos; o MSVC do CI nao.
 #ifndef WIN32_LEAN_AND_MEAN

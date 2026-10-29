@@ -24,12 +24,6 @@ src/core/tsf.h
     MIT / domínio público, texto no próprio header (bloco "LICENSE"). Backend
     SF2. Modificações do PianoForge estão marcadas com `PIANOFORGE` no fonte.
 
-third_party/lv2/lv2/include/
-    Headers LV2 — Steve Harris, David Robillard e contribuidores. ISC
-    (`third_party/lv2/lv2/COPYING`). Só headers; nenhum código deles é linkado.
-    A cópia aqui é o subconjunto `include/` do checkout — sem docs, testes,
-    schemas ou arquivos de build do projeto upstream.
-
 Dependência externa (não vendorizada)
 -------------------------------------
 
@@ -39,7 +33,7 @@ GPLv3/proprietária de antes; a própria Steinberg anuncia a mudança em
 https://www.steinberg.net/press/2025/vst-3-8/, e os três `LICENSE.txt` que
 `scripts/get_vst3sdk.sh` (ou `.ps1`) baixa — `pluginterfaces`, `base`, `public.sdk` —
 foram lidos antes de decidir, e são eles que mandam. Consequência: **`PianoForge.vst3`
-é MIT, igual a `pianoforge.lv2` e ao resto deste repositório** — nenhuma linha do
+é MIT, igual ao resto deste repositório** — nenhuma linha do
 código do SDK foi copiada para `src/`.
 
 O SDK não é vendorizado por motivo prático, não jurídico: são ~40 MB de cabeçalho e
@@ -62,8 +56,8 @@ Fontes em assets/ui/
 DejaVu Sans, DejaVu Sans Bold, DejaVu Serif e DejaVu Sans Mono — licença Bitstream
 Vera, que permite redistribuição e modificação **desde que o nome original seja
 preservado** em qualquer cópia ou derivado. Os arquivos são distribuídos sem
-renomear e as quatro vão para dentro de `pianoforge.lv2/` (e de
-`PianoForge.vst3/Contents/Resources/`) no bundle instalado.
+renomear e as quatro vão para dentro de
+`PianoForge.vst3/Contents/Resources/` no bundle instalado.
 
 Soundfonts
 ----------
@@ -75,7 +69,7 @@ créditos preenchidos em `manifest.credits[]`.
 
 As três exceções são todas geradas por script neste repo e não contêm gravação
 nenhuma: `packaging/fixture/bank.sf2` (27 bytes — um SF2 com hydra válido e zero
-amostra, para o teste H de banco inválido), `packaging/fixture/piano.png` (gradiente
+amostra, para o teste de banco inválido), `packaging/fixture/piano.png` (gradiente
 64×32, arte de fixture) e os bancos que `tools/SynthBank.hpp` escreve em tempo de
 teste com `--makesf2` (senoides sintetizadas, nunca gravadas). Esses três ficam em
 `packaging/fixture/`; o `.gitignore` bloqueia `*.sf2`/`*.wav`/`*.ppm` em qualquer

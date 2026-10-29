@@ -1,23 +1,23 @@
 #pragma once
-// Shell VST3 do PianoForge: o mesmo motor do LV2, outro contrato de host.
+// Shell VST3 do PianoForge: o motor e o painel, embrulhados no contrato do VST3.
 //
-// O que muda em relacao a src/lv2/pianoforge_lv2.cpp, e por que:
-//   - nao ha lv2:worker. Todo load de banco cai na NOSSA thread de carga, e o
-//     "park" do LV2 (pedido estacionado esperando a RAM do banco velho voltar)
-//     nao precisa de vigia: o laco da thread e o unico dono.
+// Decisoes que vem do formato:
+//   - nao ha worker do host. Todo load de banco cai na NOSSA thread de carga, e o
+//     "park" de um banco velho (pedido estacionado esperando a RAM voltar) nao
+//     precisa de vigia: o laco da thread e o unico dono.
 //   - IPlugView nao tem idle(). O painel nao recebe chamada periodica nenhuma, e
-//     por isso a UI do VST3 e empurrada pelo gancho ForgeUi::onHostPoll: sem ele,
+//     por isso a UI e empurrada pelo gancho ForgeUi::onHostPoll: sem ele,
 //     automacao e estado do banco so apareceriam no proximo clique.
-//   - o host restaura o estado e espera som: setState PEDE o load do banco. No
-//     LV2 o valor restaurado e linha de base justamente para nao carregar um
-//     piano sozinho; aqui o estado foi salvo pela nossa propria getState, entao
-//     restaurar e o comportamento certo.
+//   - o host restaura o estado e espera som: setState PEDE o load do banco. O
+//     estado foi salvo pela nossa propria getState, entao restaurar e o
+//     comportamento certo -- e o plugin continua abrindo mudo quando ninguem
+//     restaurou nada.
 //   - um componente so (SingleComponentEffect): processador + controlador no
 //     mesmo objeto, que e o formato recomendado para plugin combinado, e evita
 //     uma tabela de mensagens entre metade de audio e metade de UI.
 //
-// O painel em si nao e duplicado: ele entra por pfui::createUi (UiFactory.hpp),
-// a mesma fabrica que o lv2ui_descriptor usa.
+// O painel nao mora aqui: ele entra por pfui::createUi (UiFactory.hpp), a mesma
+// fabrica que os tres backends de janela implementam.
 
 #include "Engine.hpp"
 
@@ -43,14 +43,14 @@ namespace pianoforge {
 namespace vst3 {
 
 // Protocolo de portas do painel (ForgeUi.cpp): 3..19 = ParameterId 0..16,
-// 20 = banco, 21 = preset, 22/23 = estado. E o que o painel JA fala no LV2, e
-// reusa-lo aqui e o que permite um painel so para os dois formatos.
+// 20 = banco, 21 = preset, 22/23 = estado. Numeracao propria do painel -- nao e
+// porta de formato nenhum -- e e ela que o shell traduz para setParamNormalized.
 inline constexpr uint32_t kUiPortParamBase = 3;
 inline constexpr uint32_t kUiPortBank      = 20;
 inline constexpr uint32_t kUiPortPreset    = 21;
 
-// Parametros que no LV2 sao PORTA e aqui precisam ser PARAMETRO, porque no VST3
-// e o parametro que entra no estado, na automacao e no painel generico do host.
+// O banco e o preset sao PARAMETROS (e nao eventos) porque e o parametro que
+// entra no estado, na automacao e no painel generico do host.
 // 0..16 ficam reservados para os ParameterId do motor.
 inline constexpr Steinberg::int32 kBankParamId   = 100;
 inline constexpr Steinberg::int32 kPresetParamId = 101;
@@ -88,7 +88,8 @@ public:
     Steinberg::IPlugView* PLUGIN_API createView(Steinberg::FIDString name) override;
 
     // ---- ponte com o painel (thread da UI, sempre) ----------------------
-    // O que o painel escreve: write_() do LV2 chegando com os mesmos numeros.
+    // O que o painel escreve: o WriteFunction do painel chegando com os numeros
+    // dos eventos dele (StatusPorts.hpp).
     void uiWrite(uint32_t port, uint32_t size, uint32_t format, const void* buffer);
     void attachUi(pfui::ForgeUi* ui);
     void detachUi();

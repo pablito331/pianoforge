@@ -8,10 +8,11 @@
 // isso nada de regra de produto mora aqui.
 //
 // Uma regra de HOST que continua sendo deste arquivo, e a razao de ele ter uma
-// thread: o REAPER 7.83 instantia a UI, passa ui:parent, faz o handshake XEmbed e
-// NUNCA chama idle() nem show(). Como pintar num window cujo ancestral ainda nao
-// e viewable e descartado pelo servidor X, a UI abre sua propria conexao e bomba
-// os eventos dela; sem isso a janela aparece preta dentro de um DAW de verdade.
+// thread: o REAPER 7.83 abre o editor, entrega o container X11, faz o handshake
+// XEmbed e NUNCA chama idle() nem show(). Como pintar num window cujo ancestral
+// ainda nao e viewable e descartado pelo servidor X, a UI abre sua propria conexao
+// e bomba os eventos dela; sem isso a janela aparece preta dentro de um DAW de
+// verdade.
 
 #include "ForgeUi.hpp"
 
@@ -163,12 +164,12 @@ UiKey keyFromKeysym(KeySym ks) {
 class X11ForgeUi final : public ForgeUi {
 public:
     X11ForgeUi(Display* dpy, Window parent, const std::string& bundlePath,
-               LV2UI_Write_Function writeFn, LV2UI_Controller controller)
+               WriteFunction writeFn, void* controller)
         : ForgeUi(bundlePath, writeFn, controller), dpy_(dpy), parent_(parent) {
         const int screen = DefaultScreen(dpy_);
-        // Alguns hosts chamam instantiate() sem ui:parent (modo "flutuante").
-        // Parent 0 e BadWindow em XCreateWindow: sem isto a UI morre calada e o
-        // host mostra o container vazio.
+        // O host pode chamar attached() sem container (janela propria, modo
+        // "flutuante" do probe). Parent 0 e BadWindow em XCreateWindow: sem isto a
+        // UI morre calada e o host mostra o container vazio.
         if (!parent_) parent_ = RootWindow(dpy_, screen);
         const bool embedded = (parent_ != RootWindow(dpy_, screen));
 
@@ -657,18 +658,12 @@ private:
                    // um `namespace pfui` dentro do anonimo viraria
                    // <anon>::pfui e nao casaria com a declaracao de UiFactory.hpp.
 
-// ---- fabrica host-agnostica (UiFactory.hpp) ----------------------------
-// Mesmo contrato do backend Win32: e por aqui que o LV2 e o VST3 criam o painel.
+// ---- fabrica do painel (UiFactory.hpp) --------------------------------
 
 namespace pfui {
 
-// O resize do host chega aqui e nao e usado: no X11 quem avisa o painel do tamanho
-// e o ConfigureNotify da PROPRIA janela (o host redimensiona o filho ao aplicar o
-// pedido), e o descriptor pede o tamanho uma vez. No Win32 nao existe esse aviso,
-// e e la que o pedido precisa se repetir -- ver backend_win32.cpp.
-ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut,
-                  const LV2UI_Resize* /*resize*/) {
+ForgeUi* createUi(void* parent, const char* bundlePath, WriteFunction write,
+                  void* controller, void** widgetOut) {
     if (!hasFileDialogHelper())
         std::fprintf(stderr, "[PianoForge UI] nem zenity nem qarma no PATH: os botoes "
                              "Procurar/+ Pasta vao avisar, e o registro se editando "
@@ -695,83 +690,3 @@ ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function wri
 void destroyUi(ForgeUi* ui) { delete static_cast<X11ForgeUi*>(ui); }
 
 } // namespace pfui
-
-namespace {
-
-// ---- LV2 UI descriptor -------------------------------------------------
-
-X11ForgeUi* uiFromHandle(LV2UI_Handle handle) {
-    return static_cast<X11ForgeUi*>(handle);
-}
-
-LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
-                           const char*,
-                           const char* bundlePath,
-                           LV2UI_Write_Function writeFunction,
-                           LV2UI_Controller controller,
-                           LV2UI_Widget* widget,
-                           const LV2_Feature* const* features) {
-    Window parent = 0;
-    const LV2UI_Resize* resize = nullptr;
-    for (int i = 0; features && features[i]; ++i) {
-        if (!std::strcmp(features[i]->URI, LV2_UI__parent) && features[i]->data) {
-            parent = static_cast<Window>(reinterpret_cast<uintptr_t>(features[i]->data));
-        } else if (!std::strcmp(features[i]->URI, LV2_UI__resize) && features[i]->data) {
-            resize = static_cast<const LV2UI_Resize*>(features[i]->data);
-        }
-    }
-
-    void* native = nullptr;
-    pfui::ForgeUi* ui = pfui::createUi(
-        reinterpret_cast<void*>(static_cast<uintptr_t>(parent)), bundlePath, writeFunction,
-        controller, &native);
-    if (!ui) return nullptr;
-    *widget = reinterpret_cast<LV2UI_Widget>(reinterpret_cast<uintptr_t>(native));
-    // Sem pedir o tamanho, um host que hospeda a UI dentro de uma aba/flex nao tem
-    // como saber 1000x520 e deixa o container no tamanho dele: a janela filha fica
-    // menor do que o painel e o que se ve e um canto preto.
-    if (resize && resize->ui_resize)
-        resize->ui_resize(resize->handle, pfui::ForgeUi::preferredWidth(),
-                          pfui::ForgeUi::preferredHeight());
-    return ui;
-}
-
-void uiCleanup(LV2UI_Handle handle) { pfui::destroyUi(uiFromHandle(handle)); }
-
-// A assinatura oficial do typedef e (handle, index, BUFFER_SIZE, format, buffer)
-// -- third_party/lv2/lv2/include/lv2/ui/ui.h:200. Como os tres primeiros sao
-// inteiros, nomear ao contrario compila igual e faz o guard `format != 0` ver o
-// tamanho do buffer (4): todo port_event do host e descartado em silencio.
-// Conferir ordem no header, nunca na memoria.
-void uiPortEvent(LV2UI_Handle handle, uint32_t port, uint32_t bufferSize, uint32_t format,
-                 const void* buffer) {
-    uiFromHandle(handle)->portEvent(port, bufferSize, format, buffer);
-}
-
-int uiIdle(LV2UI_Handle handle) { return uiFromHandle(handle)->idle(); }
-int uiShow(LV2UI_Handle handle) { return uiFromHandle(handle)->show(); }
-int uiHide(LV2UI_Handle handle) { return uiFromHandle(handle)->hide(); }
-
-const LV2UI_Idle_Interface kIdleInterface = { uiIdle };
-const LV2UI_Show_Interface kShowInterface = { uiShow, uiHide };
-
-const void* uiExtensionData(const char* uri) {
-    if (!std::strcmp(uri, LV2_UI__idleInterface)) return &kIdleInterface;
-    if (!std::strcmp(uri, LV2_UI__showInterface)) return &kShowInterface;
-    return nullptr;
-}
-
-const LV2UI_Descriptor kDescriptor = {
-    "https://pianoforge.audio/plugin#ui",
-    uiInstantiate,
-    uiCleanup,
-    uiPortEvent,
-    uiExtensionData,
-};
-
-} // namespace
-
-LV2_SYMBOL_EXPORT
-const LV2UI_Descriptor* lv2ui_descriptor(uint32_t index) {
-    return (index == 0) ? &kDescriptor : nullptr;
-}

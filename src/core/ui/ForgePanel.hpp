@@ -1,7 +1,7 @@
 #pragma once
-// Painel da forja: geometria e desenho compartilhados entre o X11UI do plugin
+// Painel da forja: geometria e desenho compartilhados entre a janela do plugin
 // e o pforge_ui_preview. E isso que me deixa conferir o visual renderizando
-// PNG offscreen, sem host LV2 instalado na maquina.
+// PNG offscreen, sem host nenhum na maquina.
 //
 // O layout e a paleta sao o conceito v2 ("ideia para ui/PianoForge-Concept-v2"):
 // cada medida aqui tem um numero equivalente no CSS do prototipo, e o prototipo

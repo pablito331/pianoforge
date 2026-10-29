@@ -1,43 +1,39 @@
 #pragma once
-// Uma porta so para o painel, dois formatos de plugin.
+// A porta do painel: o shell VST3 entrega o container do host e recebe de volta o
+// objeto que desenha dentro dele.
 //
-// Ate aqui o unico jeito de criar o painel era o lv2ui_descriptor de cada
-// backend, e cada backend tinha a sua propria sequencia de "le as features,
-// constroi a classe concreta, devolve o handle nativo". O VST3 precisa do mesmo
-// painel por outro caminho (IPlugView entregando um HWND/Window/NSView), entao a
-// sequencia virou esta funcao, e o LV2 passou a chamar a mesma: um caminho so
-// significa que um bug do painel aparece nos dois formatos, e nao so no que eu
-// testei naquele dia.
+// Antes desta funcao cada formato lia as suas proprias "features" e construia a
+// classe concreta por conta propria (o lv2ui_descriptor no LV2). Hoje ha um shell
+// so, e a sequencia ficou num lugar so: um bug do painel aparece no plugin, nao
+// numa copia de cola.
 //
 // Cada arquivo de plataforma (backend_win32.cpp, backend_x11.cpp,
-// backend_cocoa.mm) implementa estas duas funcoes. O alvo do plugin VST3 compila
+// backend_cocoa.mm) implementa estas duas funcoes. O alvo do VST3 compila
 // exatamente UM deles, entao nao ha #ifdef de sistema dentro do shell do VST3.
 
 #include "ForgeUi.hpp"
 
 namespace pfui {
 
-// parent: handle nativo do container do host, do tipo que ui:parent carrega --
-// HWND no Win32, Window no X11, NSView* no Cocoa. nullptr pede janela propria
-// (modo flutuante, que e o que o probe usa).
+// parent: handle nativo do container do host -- HWND no Win32, Window no X11,
+// NSView* no Cocoa. nullptr pede janela propria (modo flutuante, que e o que o
+// probe usa).
 //
 // bundlePath: pasta do bundle, de onde saem as fontes e a arte do .pforge. Pode
 // ser vazio; ForgeUi::loadFonts cai nos diretorios do sistema.
+//
+// write/controller: o par que o painel usa para escrever num parametro do host.
 //
 // widgetOut (opcional): recebe o handle nativo do painel, que e o que o host
 // embute. Devolve nullptr se a janela nao pode ser criada -- quem chama NAO
 // pode seguir com um objeto sem janela.
 //
-// resize (opcional): a feature LV2UI_Resize que o host ofereceu, ou nullptr. O
-// tamanho do painel e do container do host, e um host pode demorar a ter esse
-// container: por isso quem pede o tamanho e o backend, que sabe repetir o pedido
-// e acompanhar o container depois. Ver Win32ForgeUi::seguirContainer() -- o
-// REAPER no Windows entrega ui:parent com 65x86 e so cresce quando aplica o
-// pedido, o que zerava o painel num pedido unico feito no instantiate. No VST3
-// vem sempre nullptr: la quem manda o tamanho e o IPlugView.
-ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut,
-                  const LV2UI_Resize* resize = nullptr);
+// O tamanho NAO e pedido daqui: quem manda no layout de um VST3 e o IPlugView
+// (getSize/canResize), e o backend acompanha o container por conta propria -- no
+// Win32 quem cresce depois vira um WM_SIZE no pai, e e o relogio lento que confere
+// o cliente dele (ver Win32ForgeUi::seguirContainer()).
+ForgeUi* createUi(void* parent, const char* bundlePath, WriteFunction write,
+                  void* controller, void** widgetOut);
 
 // Destroi na thread em que foi criado: no Win32 isso nao e formalidade, destruir
 // um filho de janela de outra thread trava o processo inteiro.

@@ -18,7 +18,7 @@ third_party/*/build/
 *.wav
 *.ppm
 *.log
-*.lv2/
+*.vst3/
 packaging/fixture/out*/
 packaging/fixture/*.pforge
 !packaging/fixture/test.pforge

@@ -1,16 +1,24 @@
 # PianoForge — Como funciona (guia de arquitetura e base pra UI)
 
-> Plugin LV2 de piano modelado: toca um **SF2/SFZ que você registrou** com um
+> Plugin VST3 de piano modelado: toca um **SF2/SFZ que você registrou** com um
 > backend de amostras (tinysonic ou sfizz) e uma cadeia de DSP própria — martelo,
 > ressonância simpática, EQ, tampa, chorus, reverb. Nada é carregado sem você
 > escolher. Este doc é a referência de arquitetura e da interface "Forja".
 >
-> **Vai construir a UI em outro editor (Carla, plugui, Ozugin, web)?** Leia
+> **Vai construir a UI em outro editor (web, mock, ferramenta própria)?** Leia
 > `UI-KIT.md` primeiro: ele é extraído deste doc mas só com o que uma UI precisa —
-> contrato com o host, as 24 portas com faixa/default, o protocolo de escrita e de
-> `port_event`, as regras de produto que uma tela não pode violar, geometria, paleta
-> e o caminho de reuso de `drawPanel()` sem tocar em X11. Este arquivo aqui continua
-> sendo a razão das regras; `UI-KIT.md` é a especificação.
+> contrato com o shell, os 17 parâmetros com faixa/default, o protocolo de escrita e
+> de `port_event`, as regras de produto que uma tela não pode violar, geometria,
+> paleta e o caminho de reuso de `drawPanel()` sem tocar em X11. Este arquivo aqui
+> continua sendo a razão das regras; `UI-KIT.md` é a especificação.
+>
+> **Sobre as medidas deste doc.** Os números foram medidos com o harness que existiu
+> até a virada para VST3 único: `pforge_host_test` e `pforge_ui_probe` abriam o
+> plugin pelo caminho LV2 e foram removidos junto com o formato. O engine e o painel
+> medidos são os mesmos que estão aqui hoje; as provas que restaram no repo são
+> `pforge_vst3_probe`, `pforge_dsp_stages`, `pforge_ui_preview` e o render do
+> standalone. Onde este texto diz "teste X", leia "o teste do harness antigo, cujo
+> equivalente VST3 está indicado em §9".
 
 ---
 
@@ -21,17 +29,17 @@ O plugin já lê o bundle `.pforge` (`src/core/Bundle.{hpp,cpp}`): registrar um
 
 ```
 ~/.config/pianoforge/soundfonts.list     (registro explícito: 1 linha = 1 piano)
-        │  indice na porta soundbank (20), -1 = nenhum piano
+        │  indice no evento soundbank (20), -1 = nenhum piano
         ▼
 ┌───────────────────────────────┐
-│  Bank  (imutável após pronto) │  construído e aquecido NO WORKER
+│  Bank  (imutável após pronto) │  construído e aquecido na thread de carga
 │  ├─ SF2 → tinysonic (tsf)     │  tsf_load_* + max_voices + preset 0
 │  ├─ SFZ → libsfizz            │  loadSfzFile = control-thread
 │  └─ .pforge → um dos dois     │  Bundle: diretório + CRC32 + inflate
 └──────────────┬────────────────┘
                │ publish: std::atomic<Bank*> exchange   (run() só lê rt_)
                ▼
-MIDI (atom in) ──▶┌──────────────────────┐
+MIDI (IEventList) ─▶┌──────────────────────┐
 params (3..19) ──▶│  vozes + velCurve    │  velocity layers, loops, pitch
                   └──────────┬───────────┘
                              │ áudio cru L/R
@@ -41,13 +49,13 @@ params (3..19) ──▶│  vozes + velCurve    │  velocity layers, loops, pi
                   │                      │  EQ → lid → chorus → reverb
                   └──────────┬───────────┘
                              ▼
-                       áudio out L/R (0,1)
+                       áudio out L/R (barramento estéreo)
 ```
 
 O banco velho nunca é fechado na thread de áudio: `tsf_close` de um SF2 grande é
 um `munmap` de centenas de MB (medido: 8,5 ms para libertar um banco de 49 MB
-dentro de `run()`). Entra na fila de retire e é liberado no próximo turno do
-worker, depois de confirmar que o `run()` passou por um bloco sem vê-lo — e o
+dentro de `run()`). Entra na fila de retire e é liberado na thread de carga,
+depois de confirmar que o `run()` passou por um bloco sem vê-lo — e o
 banco **novo** só é lido do disco depois que essa RAM voltou (ver
 "Quanta RAM um banco pede").
 
@@ -73,9 +81,10 @@ posição certa do arquivo — o que custa disco sequencial mas não duplica os 
 em RAM. Entry comprimido (zlib) é o único caso que materializa
 o payload antes de carregar. SFZ dentro de bundle vai para
 `~/.cache/pianoforge/bundles/<nome>/` porque o sfizz só abre por caminho. Nada
-disso roda na thread de áudio: é o `work()` do worker. Um entry cujo CRC não bate
+disso roda na thread de áudio: é a thread de carga do plugin. Um entry cujo CRC não bate
 é erro legível no stderr e **nada é publicado** — o piano tocando continua tocando
-(teste H do `pforge_host_test`).
+(conferido pelo teste de estado do `pforge_vst3_probe`: banco inválido não derruba o
+que está no ar).
 
 Ainda projeto: a imagem do piano no painel esquerdo, alimentada pelo `imagem` do
 manifest, e os `params` do preset como ponto de partida do painel.
@@ -87,8 +96,7 @@ Componentes e onde estão hoje:
 | Formato `.pforge` (pack/unpack/verify + CRC) | ✅ pronto e testado | `packaging/bundle.py` |
 | leitor `.pforge` no plugin (directório, CRC, inflate, stream para o `tsf`) | ✅ | `src/core/Bundle.{hpp,cpp}` |
 | engine sfizz (libsfizz) | opcional — sem ela o build recusa `.sfz`/`.sf3` com uma linha no stderr | `-DPF_HAVE_SFIZZ=ON` (default) + `-DSFIZZ_DIR`, ou `scripts/get_sfizz.sh` |
-| headers LV2 | ✅ vendorizados | `third_party/lv2/lv2/include/` |
-| wrapper LV2 (24 ports, `lv2:worker`, 2 saídas de estado) | ✅ | `src/lv2/pianoforge_lv2.cpp` |
+| shell VST3 (SingleComponentEffect, `IPlugView`, 17 parâmetros, `setState`/`getState`) | ✅ | `src/vst3/PianoForgeVst3.{hpp,cpp}`, `src/vst3/Entry.cpp` |
 | backend SF2 (tinysonic `tsf`) + SFZ (sfizz) | ✅ atrás de `struct Bank` | `src/core/Engine.{hpp,cpp}`, `src/core/tsf.h` |
 | DSP chain (hammer, ressonância, EQ, tampa, chorus, reverb) | ✅ | `src/core/dsp/` |
 | **UI "Forja de Pianos"** | ✅ | `src/core/ui/` (rasterizador + painel), `src/ui/ForgeUi.{hpp,cpp}` (controlador), `src/ui/backend_{x11,win32,cocoa}` (a janela do SO) |
@@ -97,11 +105,13 @@ Componentes e onde estão hoje:
 
 ### As duas regras que mandam no resto
 
-1. **Nada é carregado até você escolher.** `instantiate()` não toca disco nenhum;
-   `run()` com `soundbank = -1` é silêncio absoluto (nem o martelo, nem a
-   ressonância simpática disparam). Um valor que o host *restaure* de uma sessão
-   salva é gravado como baseline em `activate()` e **não** dispara load — você
-   escolhe de novo. Consequência aceita: sessão salva abre muda.
+1. **Nada é carregado até você escolher.** Criar a instância não toca disco nenhum;
+   `process()` sem piano é silêncio absoluto (nem o martelo, nem a ressonância
+   simpática disparam). O piano chega por dois caminhos e só por eles: o usuário
+   clica na lista do painel, ou o host entrega um estado (`setState`) que aponta para
+   um banco — é assim que uma sessão salva devolve o piano que estava lá, e a carga
+   roda na thread própria do plugin, nunca na de áudio. Projeto **novo** não tem
+   estado: abre mudo.
 2. **A lista de pianos só tem o que você registrou — e na primeira execução ela está
    vazia.** `~/.config/pianoforge/soundfonts.list` (Linux/macOS) ou
    `%APPDATA%\pianoforge\soundfonts.list` (Windows), um caminho absoluto por linha, ordem
@@ -114,20 +124,20 @@ Componentes e onde estão hoje:
    alfabética de 26 arquivos). E o registro **não é semeado**: o plugin não copia para lá
    nada de `soundfonts.conf` (o formato antigo, que listava pastas), nem de
    `custom_soundfonts.list`, nem de `~/.local/share/pianoforge/soundfonts`, nem de dentro
-   do próprio bundle — não há piano nenhum no bundle (conferido: só `.so`, `.ttl` e as
-   quatro TTF). Arquivo ausente = lista vazia = o painel de véu pedindo o primeiro
+   do próprio bundle — não há piano nenhum no bundle (conferido: só o binário da
+   pasta da arquitetura e as quatro TTF). Arquivo ausente = lista vazia = o painel de véu pedindo o primeiro
    soundfont. Linha que não é `.sf2/.sf3/.sfz/.pforge` (pasta inclusa) não entra na lista
    nem como item riscado: riscado é o arquivo que sumiu. Botões `+ Pasta` importam
    `*.sf2/*.sfz` de **um nível**, uma vez, sem monitorar. `.pforge` é banco como qualquer
    outro.
 
 Trocar de piano não roda I/O na thread de áudio: o `Bank` é construído e
-aquecido no worker, publicado por `std::atomic` exchange, e o banco velho é
-destruído na thread do worker (`tsf_close` de um banco de 1,2 GB é `munmap` de
+aquecido na thread de carga, publicado por `std::atomic` exchange, e o banco velho é
+destruído nessa mesma thread (`tsf_close` de um banco de 1,2 GB é `munmap` de
 dezenas de ms — o dobro do arquivo, ver "Quanta RAM um banco pede").
-E como "ter `lv2:worker`" não significa "rodar `work()`" — o REAPER aceita o pedido
-e só bombeia o worker com o transporte tocando — a thread de reserva do plugin está
-sempre viva e assume o load depois de 2 s sem sinal de vida do host.
+Não existe worker de host no VST3: quem carrega é sempre a thread do plugin, criada
+no primeiro pedido e viva enquanto houver carga pendente. O VST3 também não tem
+`idle()`, então nada aqui depende do host bombear alguma coisa.
 
 ### Quanta RAM um banco pede (medido, não estimado)
 
@@ -160,31 +170,31 @@ Nunca espiar de fora.
 o velho publicado, ou seja, os dois no ar: no par registrado nesta máquina,
 496 + 1221 = **1,7 GB**. Agora ele primeiro `publishBank(nullptr)` (silêncio),
 estaciona o pedido e só pega o disco depois que a RAM do velho voltou — o que o `run()`
-confirma ao passar por um bloco e o `work()` coleta em `MSG_FREE_OLD`; sem worker do
-host, quem trata o aviso é a thread de reserva. Consequências, todas medidas:
+confirma ao passar por um bloco e a thread de carga coleta no aviso de liberação.
+Consequências, todas medidas:
 
 - pico do swap **104 MB em vez de 141 MB** no par conferido — os dois números são
-  caminhos diferentes do mesmo par de bancos: `pforge_host_test` com dois `--sf2`
+  caminhos diferentes do mesmo par de bancos: o harness LV2 com dois `--sf2`
   (com o estacionamento) contra `pforge_dsp_stages --sf2 A --sf2b B` (que é exatamente
   "alocar com o outro vivo").
 - a troca de piano fica muda por mais ~1 bloco. Preço irrelevante: ela já ia trocar
   de piano, e as vozes em andamento morrem com o banco velho de qualquer forma.
-- host que não bomba `work()` não prende nada: o estacionamento tem teto de 300 ms
-  (3 ticks da thread de reserva) e ao estourar o load segue com o velho na fila
+- host que não drena o aviso não prende nada: o estacionamento tem teto de 300 ms
+  (3 ticks da thread de carga) e ao estourar o load segue com o velho na fila
   (`loadBankNow(index, /*esperarLiberar=*/false)`. Pedido travado em "forjando" pesa
   mais que pico de RAM.
 
-**Um `free()` de 8,5 ms dentro do `run()`.** No caminho sem worker, `pingFreeOld()`
+**Um `free()` de 8,5 ms dentro do `run()`.** No caminho antigo, `pingFreeOld()`
 libertava o banco aposentado na própria chamada de áudio. O teste J (novo no
-`pforge_host_test`) mede o antes e o depois com o mesmo par de bancos: `maxBlock`
+harness LV2) mede o antes e o depois com o mesmo par de bancos: `maxBlock`
 **8,471 ms** no jeito antigo — confirmado mutando a função de volta e rodando o teste,
-que reprova — contra **0,509 ms** com o aviso indo para a thread de reserva. Com um
+que reprova — contra **0,509 ms** com o aviso indo para a thread de carga. Com um
 banco de 1,2 GB isso era um xrun a cada troca (não medido: a máquina não tem RAM para
 o teste). Duas guardas saíram junto: a fila de retire agora é protegida por um mutex
 `retireMx` com a lista *roubada* antes do `delete`, porque dois caminhos não-RT
-(`MSG_FREE_OLD` do host e a thread de reserva) podiam libertar a mesma `Bank` — foi
-isso que apareceu como `corrupted size vs. prev_size` antes de o dono do retire ficar
-único por modo de host.
+(a thread de carga e o próprio `run()` no caminho de exceção) podiam libertar a mesma
+`Bank` — foi isso que apareceu como `corrupted size vs. prev_size` antes de o dono do
+retire ficar único.
 
 Duas coisas que a medição **rejeitou**, e que por isso não estão no código:
 
@@ -221,7 +231,7 @@ Regras do leitor (`src/core/Bundle.cpp`): nada do bundle é lido na thread de á
 O CRC32 de cada entry é conferido antes de entregar ao sampler, e entry fora de
 ordem, `size` estourando o arquivo, tipo desconhecido, nome absoluto ou com `..`
 ⇒ rejeita o bundle inteiro com mensagem no stderr — e como nada é publicado, o
-piano que está tocando continua tocando (teste H do `pforge_host_test`).
+piano que está tocando continua tocando.
 
 SF2 dentro do bundle **não** é copiado: depois de fechar o CRC, o `tsf` lê o entry
 por `tsf_stream` na posição certa do arquivo. Só SFZ (que o sfizz insiste em abrir
@@ -285,10 +295,11 @@ pode apontar um `sf2` diferente). Casar os dois sem a conta bater seria mentir n
 rodapé — um bundle de piano único com um SF2 de 62 presets mostraria o nome errado
 em 61 dos 62. Quando as contas não batem, o rodapé volta a dizer o arquivo.
 
-Por que os `params` não são aplicados: eles chegariam ao plugin por portas de
-`float` que o host grava e automatiza. Escrever neles de dentro da UI sem o host
+Por que os `params` não são aplicados: eles chegariam ao plugin pelos 17 parâmetros
+que o host grava e automatiza. Escrever neles de dentro da UI sem o host
 pedir é exatamente a classe de bug que este projeto caçou (valor na tela ≠ valor no
-plugin). O caminho honesto é `lv2:state` ou um preset do próprio host; fica no §8c.
+plugin). O caminho honesto é `setState`/`getState` ou um preset do próprio host; fica
+no §8c.
 
 
 ---
@@ -296,39 +307,42 @@ plugin). O caminho honesto é `lv2:state` ou um preset do próprio host; fica no
 ## 3. Modelo de parâmetros (o coração da UI)
 
 Conceito: **o preset define o estado inteiro; a UI mostra só um subconjunto.**
-Todo param é uma LV2 control port (logo: automatable e salvo pelo DAW), mas cada um
-tem uma **categoria** no TTL do plugin:
+Todo param é um parâmetro VST3 de verdade (`getParameterInfo`/`setParamNormalized`,
+logo: automatable e salvo pelo DAW), mas cada um tem uma **categoria**:
 
 - **`knob`** — aparece na UI como knob editável
 - **`hidden`** — não aparece; valor vem do preset e muda só via automação/troca de preset
 
-### Índice das 24 ports (é isto que o host grava; nunca reordenar)
+### Índice dos eventos do painel (numeracao própria do controlador; nunca reordenar)
 
-| índice | direção | o que é |
+O áudio não entra nesta numeração: é um barramento estéreo declarado no shell. O MIDI
+idem — chega por `IEventList`, não por evento do painel. O que sobra é o canal entre a
+UI e o shell, e é ele que precisa ficar estável:
+
+| índice | sentido | o que é |
 |---|---|---|
-| 0, 1 | out | áudio L / R |
-| 2 | in | MIDI (`atom:AtomPort`, `midi: MidiEvent`) |
-| 3 … 19 | in | os 17 params abaixo — `porta = 3 + ParameterId` |
-| 20 | in | `soundbank` — inteiro `-1..255`, default `-1` = nenhum piano; `-1` tem scalePoint "Nenhum piano" |
-| 21 | in | `preset` — índice dentro do banco ativo, `0..1023` (o `maximum` do TTL acompanha a porta 23: banco com 592 presets não cabe em 127) |
-| 22 | **out** | `bankState` — `-4` falha ao carregar, `-3` carregando, `-2` nenhum piano, `≥0` **índice do banco que está de fato soando** |
-| 23 | **out** | `presetCount` — quantos presets o banco publicado tem |
+| 3 … 19 | UI → shell | os 17 params abaixo — `evento = 3 + ParameterId` |
+| 20 | UI → shell | `soundbank` — inteiro `-1..255`, default `-1` = nenhum piano |
+| 21 | UI → shell | `preset` — índice dentro do banco ativo, `0..1023` (o teto acompanha o evento 23: banco com 592 presets não cabe em 127) |
+| 22 | **shell → UI** | `bankState` — `-4` falha ao carregar, `-3` carregando, `-2` nenhum piano, `≥0` **índice do banco que está de fato soando** |
+| 23 | **shell → UI** | `presetCount` — quantos presets o banco publicado tem |
 
-As duas saídas nasceram de um problema concreto: a UI não tinha como saber o que o
-worker estava fazendo, e "FORJANDO" durava um chute de tempo (`~35 MB/s` medidos).
-Hoje `run()` escreve 22/23 no começo de todo bloco (sem alocação, `StatusPorts.hpp`),
-o host repassa como `port_event` de formato 0, e o painel mostra o estado real —
+As duas saídas nasceram de um problema concreto: a UI não tinha como saber o que a
+thread de carga estava fazendo, e "FORJANDO" durava um chute de tempo (`~35 MB/s` medidos).
+Hoje `process()` escreve 22/23 no começo de todo bloco (sem alocação, `StatusPorts.hpp`),
+o shell entrega à UI pela mesma função de escrita, e o painel mostra o estado real —
 inclusive quando o arquivo **não** abriu, que é quando um "carregando" eterno
 mentiria.
 
-> Armadilha paga **duas vezes**: o typedef é
-> `(handle, index, **buffer_size**, format, buffer)` — `third_party/lv2/lv2/include/lv2/ui/ui.h:200`.
-> Nomear os argumentos ao contrário compila igualzinho — e o guarda
+> Armadilha paga **duas vezes**: a assinatura do callback de escrita é
+> `(controller, port, **size**, format, buffer)` — hoje um typedef nosso em
+> `src/ui/ForgeUi.hpp` (`WriteFunction`), antes um tipo do header do formato que
+> existia. Nomear os argumentos ao contrário compila igualzinho — e o guarda
 > `if (format != 0) return;` passa a ver o *tamanho* do buffer (`4`), descartando
-> **todo** `port_event`. A primeira vez (checkpoint da noite III) foi corrigida ao
+> **todo** evento. A primeira vez (checkpoint da noite III) foi corrigida ao
 > contrário *nos dois lados*: a UI declarou `(port, format, bufferSize, buffer)` e o
-> `pforge_ui_probe` mandava `(port, 0, sizeof)` — espelhos exatos, teste verde, e um
-> host de verdade seguiria sendo ignorado. Só um header conferido (ou um segundo
+> harness mandava `(port, 0, sizeof)` — espelhos exatos, teste verde, e um host de
+> verdade seguiria sendo ignorado. Só a conferência no header (ou um segundo
 > implementante, no caso a camada da pasta `ideia para ui`) mostra o erro. Regra
 > agora escrita em `UI-KIT.md` §1: **conferir a ordem no header, nunca na memória —
 > nem na nossa documentação.**
@@ -523,7 +537,7 @@ coisas em `Engine::render`:
   O teto do merge é `max(pos + kCcSlice, pos + kMinSlice)`, e o piso em `kMinSlice`
   é o que devolveu o bloco denso a 0,807 ms.
 
-Prova no `pforge_host_test`, teste G, agora com 8 repetições e estatística min..max
+Prova no harness LV2 (teste G), com 8 repetições e estatística min..max
 (um bloco cronometrado sozinho é uma moeda: a mesma build deu 0,706 e 1,036 ms para
 o mesmo trabalho): `64 notas = 0,705..1,000 ms`, `+100 CC = 0,807..1,277 ms`, e a
 decomposição `100 CC espalhados = 0,123..0,622 ms` mostra que o que o merge comprou
@@ -652,7 +666,8 @@ decide há quanto tempo uma corda pedalizada estava no ar quando o abafador caiu
 em 4,8 s) e só o grave ainda seria ouvido por cima da textura. RAM de voz é estruturinha
 (~200 B); o banco não muda com o teto, e a RSS também não.
 
-**O que o `pforge_host_test` prova, e com que método:**
+**O que o harness de pedal prova, e com que método** (hoje a versão viva da medida é
+`pforge_dsp_stages --pedalload`, que imprime `MUDAS=` e as regiões sem slot):
 
 - **L** (40 teclas, pedal no ar, pool folgadíssimo) é a medida diferencial clássica: a
   mesma sequência inteira, e depois uma vez por tecla omitida; a janela de cada tecla
@@ -710,16 +725,16 @@ número mágico em milissegundos reprovaria um conserto correto. Medido no teto 
 64 ataques num bloco só mais 100 CC de automação: `1,00..1,35 ms` e `1,10..1,79 ms` —
 dentro do orçamento nos mínimos determinísticos, e os 80% restantes ficam para o resto
 do projeto do host. O caso típico (carga de banco, troca, notas reais) continua assegurado
-em p99.9 < 0,2 ms nos testes B/D/I.
+em p99.9 < 0,2 ms nos testes B/D/I do harness antigo.
 
 ---
 
 ## 5. Interface — a Forja de Pianos (o que está construído)
 
-X11UI externa (`ui:X11UI`), 1000×520, desenhada num framebuffer ARGB32 próprio
+A janela, 1000×520, é desenhada num framebuffer ARGB32 próprio
 (`src/core/ui/Surface.hpp`) com `stb_truetype` — sem Cairo, sem FreeType, sem GL:
-o mesmo código de desenho serve ao X11UI e ao preview offscreen, e é assim que o
-visual é conferido sem host LV2 instalado. Apresentação por `XShmPutImage`, com
+o mesmo código de desenho serve à janela dentro do host e ao preview offscreen, e é
+assim que o visual é conferido sem host instalado. Apresentação por `XShmPutImage`, com
 fallback **verificado** para `XPutImage`: `XShmAttach` devolve 1 mesmo quando o
 servidor recusa o segmento, então só se confia no SHM depois de um `XSync` com
 handler de erro próprio (sem isso a UI pintava e o host não mostrava nada). Nesta
@@ -798,7 +813,7 @@ Regras de UX implementadas:
    O véu fica no ar durante o CARREGANDO também — só um banco *publicado* o tira —
    e ele cobre os knobs, **nunca a lista** (regra 9).
 8. Fagulhas só animam no knob sob o mouse e por ~1,5 s depois de soltar; fora
-   disso `idle()` não redesenha, pra não queimar CPU em host free-wheeling.
+   disso a thread da UI não redesenha, pra não queimar CPU em host free-wheeling.
 9. **A lista é o controle de escolha, e ela vive sob o véu.** `hitTest()` resolve
    busca, linhas e botões *antes* do guarda do véu; com o guarda primeiro, clicar
    numa linha com a forja fria não fazia nada e sobrava só o botão do card para
@@ -814,13 +829,13 @@ Regras de UX implementadas:
    mesmo número cobria o `dampTune` do rodapé. Texto de estado coberto por texto de
    feedback não é flutuante, é colisão.
 10. **"FORJANDO" é o plugin dizendo**, não a UI estimando: a porta 22 vale `-3`
-   enquanto o worker rói o arquivo, vira o índice publicado quando toca, `-2` no
+   enquanto a thread de carga rói o arquivo, vira o índice publicado quando toca, `-2` no
    silêncio e `-4` na recusa. O rodapé distingue os três:
    `FORJANDO / Felt Grand (1,6 GB)`, `NAO ABRIU / <pedido> - ainda toca <publicado>`,
    `<banco> / <arquivo> · piano na forja`. A estimativa por tamanho (~35 MB/s
    medidos nesta máquina) continua no código só como **fallback** pra host que
-   nunca repassa `port_event`, com teto de segurança: se o status nunca chega, o
-   "forjando" se apaga sozinho e o rodapé lê `sem resposta do plugin`.
+   nunca repassa o estado das portas 22/23, com teto de segurança: se o status nunca
+   chega, o "forjando" se apaga sozinho e o rodapé lê `sem resposta do plugin`.
 11. **Preset (porta 21) tem lugar no rodapé** — a pílula `◂ PRESET i/N ▸` só aparece
    quando a porta 23 informa `N > 1` e há banco publicado (SFZ é sempre 1; SF2
    grande passa de 500). Clique, roda do mouse sobre a pílula e ← → do teclado
@@ -828,8 +843,8 @@ Regras de UX implementadas:
    A linha miuda sob o nome lê `preset i/N - <arquivo>` (com `N == 1` fica só o
    arquivo: não há o que escolher), e o canto direito guarda o estado do **plugin**
    — escrever o preset ali apagaria o "piano na forja", que é a informação que a
-   porta 22 trouxe. Nome de preset não viaja: as saídas são control ports de
-   `float`, então dizer qual preset está soando exige índice + arquivo, não rótulo.
+   porta 22 trouxe. Nome de preset não viaja: os eventos 22/23 são inteiros que o
+   shell converte, então dizer qual preset está soando exige índice + arquivo, não rótulo.
 12. **O `.pforge` manda no que o painel diz sobre si mesmo** (regra 8 de §2): o nome
    da linha e do rodapé vem de `manifest.produto`, a arte de `presets[].imagem` sai
    pela placa embaixo da lista, e `presets[].nome` entra na linha miúda quando a
@@ -864,18 +879,20 @@ sentido ao estado vazio ("…nenhum banco será carregado **automaticamente**").
 
 Sete regras, cada uma paga com uma tela preta real:
 
-1. **O primeiro frame não espera `idle()`.** `instantiate()` mapeia e desenha, e
-   `show()` desenha também. Um host que só bomba `idle()` quando quer — ou que não
-   conhece `idleInterface` — viajava o fundo da janela (`ironDeep`, indistinguível
-   de preto). Prova: `pforge_ui_probe --noidle` → 1276 cores depois de 400 ms sem
-   nenhuma chamada de idle (o settle existe porque, desde a regra 6, quem pinta é a
-   thread da própria UI, que precisa de alguns ms para existir).
+1. **O primeiro frame não espera chamada nenhuma do host.** `attached(parent)` mapeia
+   e desenha, e `setFrame()` desenha também. Um host que só desenha quando quer — ou
+   que monta o container depois — viajava o fundo da janela (`ironDeep`, indistinguível
+   de preto). Prova: `pforge_vst3_probe --ui` → centenas de cores depois de 400 ms sem
+   nenhuma chamada do host além do `attached()` (o settle existe porque, desde a
+   regra 6, quem pinta é a thread da própria UI, que precisa de alguns ms para
+existir).
 2. **A janela filha herda o visual do container do host** (`XCreateSimpleWindow`
    passa `CopyFromParent`), então o `XImage` é montado com o
    `XGetWindowAttributes` do *nosso* window, não com `DefaultVisual/DefaultDepth`.
-3. **O tamanho é do host, não o nosso.** `LV2UI_Resize` (feature `ui:resize`) pede
-   1000×520 no instantiate; se o host impuser outro, `ConfigureNotify` chama
-   `adoptSize()`, que refaz Surface + XImage. Putar 1000×520 num drawable menor é
+3. **O tamanho é do host, não o nosso.** `IPlugView::getSize()` responde 1000×520 e
+   `canResize()` diz não; quando o host impõe outro tamanho, `setFrame()`/`ConfigureNotify`
+   chama `adoptSize()`, que refaz Surface + XImage; no Win32, `seguirContainer()` copia
+   o retângulo do container a cada 200 ms. Putar 1000×520 num drawable menor é
    `BadMatch` em todo frame — e `BadMatch` engolido pelo handler do host é tela
    preta. Nunca se alarga abaixo do que o host deu pelo mesmo motivo.
 4. **Redesenhar em `MapNotify`/`ReparentNotify`/`VisibilityNotify`**, além de
@@ -888,12 +905,12 @@ Sete regras, cada uma paga com uma tela preta real:
    bits o byte alfa é copiado como `0xFF` (senão as bordas antialiasadas ficam
    translúcidas e o fundo do host aparece através delas).
 
-6. **A UI se auto-pilota.** Um host de verdade (REAPER 7.83) passa `ui:parent`,
-   mapeia o socket, lê e escreve parâmetros — e **nunca chama `idle()` nem
-   `show()`**. Como desenhar numa janela cujo ancestral ainda não é *viewable* é
-   descartado pelo servidor X (sem backing store), o paint do `instantiate()` se
-   perde e só um redraw *depois* do `MapNotify` salva — o que exige bombear eventos
-   que o host não bombeia. A UI então abre **uma segunda conexão X**
+6. **A UI se auto-pilota.** Um host de verdade passa o container em
+   `attached()` (no X11, o socket XEmbed) e depois pode passar minutos sem chamar
+   nada: **não existe `idle()` no VST3**. Como desenhar numa janela cujo ancestral
+   ainda não é *viewable* é descartado pelo servidor X (sem backing store), o paint
+   do `attached()` se perde e só um redraw *depois* do `MapNotify` salva — o que exige
+   bombear eventos que o host não bombeia. A UI então abre **uma segunda conexão X**
    (`gfx_ = XOpenDisplay(nullptr)`) só sua, tira a seleção de eventos da conexão do
    host (`XSelectInput(dpy_, win_, 0L)`, senão entope a fila dele) e roda
    `pumpLoop()` numa thread: `select()` no fd da conexão, tick de animação, redraw
@@ -902,17 +919,17 @@ Sete regras, cada uma paga com uma tela preta real:
    reentrar em `port_event` na thread do host. Diálogo (`zenity`) roda **fora** do
    lock — `popen` bloqueante com a lock tomada congela o redraw.
 
-7. **Um `port_event` do host acorda a thread da UI.** Com a regra 6, quem desenha é
+7. **Um evento vindo do shell acorda a thread da UI.** Com a regra 6, quem desenha é
    a `pumpLoop()`, e ela dorme num `select()` com timeout de **1 s** quando nada
    anima na tela. O `needDraw_` armado pela thread do host não atravessa um fd: sem
    um `pipe2(O_NONBLOCK|O_CLOEXEC)` no conjunto do select, o painel fica até um
-   segundo atrasado em toda mudança vinda de fora — invisível no REAPER (o mouse do
+   segundo atrasado em toda mudança vinda de fora — invisível num host (o mouse do
    usuário acorda a thread) e gritante no probe, que injeta status e captura em
-   60 ms. Foi assim que `--port 22:0` voltou a pintar 1457 cores depois de parecer
-   morto. O write é não-bloqueante porque um segundo `port_event` com o pipe cheio
+   60 ms. O write é não-bloqueante porque um segundo evento com o pipe cheio
    pararia a thread *principal* do host.
 
-Prova de que a janela vive num DAW real: com o REAPER aberto no FX chain, a captura
+Prova de que a janela vive num DAW real, feita quando o plugin ainda era LV2: com o
+REAPER aberto no FX chain, a captura
 da janela do host deu o painel completo (1276 cores distintas), um clique real na
 linha do piano escreveu a porta 20 (`Banco de Piano=0.000`) e um arrasto real no
 knob levou 0.900 → 1.000.
@@ -941,32 +958,19 @@ knob levou 0.900 → 1.000.
   de config continua com os dois arquivos legados e nada novo. Uma segunda variante põe no
   próprio `soundfonts.list` uma pasta e um `.sf2`: sai `01` com o piano e a pasta ignorada
   (2426 cores) — linha que não é soundfont não entra nem riscada.
-- `pforge_ui_probe` sobe o `pianoforge_ui.so` numa janela X11 de verdade
-  (override-redirect fora da tela), faz o handshake XEmbed, injeta
-  `--click x:y` / `--drag a:b c:d` e captura os pixels e cada escrita de porta.
-  Provou `clique na lista → [20]=0.000` e `arrasto no volume → [3]=0.889 … 1.000`.
-  É também o passo **D** do CI, e ali ele roda sob `Xvfb :99`: fora da tela funciona
-  num servidor com compositor e **não** funciona num sem backing store — ver a
-  armadilha "Off-screen não tem bits" no `UI-KIT.md` §11, que é o motivo de o probe
-  reler com o container em `8,8` quando a primeira leitura não mostra nada. Medido
-  nas duas: 2527 cores.
-  `--port ÍNDICE:VALOR` chama `port_event` do caminho do host pra cá — é assim que
-  as saídas 22/23 entram na UI sem rodar o plugin, e foi assim que se descobriu que
-  a assinatura trocada de `uiPortEvent` descartava todos os eventos. Combinado com
-  `--click 416:486` (a seta `▸` no layout 1000×520) prova o preset:
-  `--port 22:0 --port 23:62 --port 21:7 --click 416:486 → [21]=8.000`.
-  Modos que emulam o que um host faz com a janela: `--noidle` (nunca chamar
-  `idle()`), `--unmapped-parent` (mapear o container depois do instantiate),
-  `--resize LxA` (host redimensiona o filho), `--depth32` (container com visual
-  próprio — cai em `visual-alt` quando o servidor recusa depth 32 fora do root).
-- **Teclado e roda só existem no probe desde a rodada do conceito v2**, e os dois
-  acharam defeito. `--type "texto"` injeta caractere por caractere com
-  `XKeysymToKeycode` na *mesma* display (a UI traduz keycode por `XLookupString`;
-  botar um keysym no campo errado do evento não chega a nada), `--key Nome` manda
-  teclas nomeadas, `--wheel x:y:delta` repete o botão 4/5 `|delta|` vezes e
-  `--shift` põe `ShiftMask` no arrasto. O que isso provou, com as coordenadas do
-  layout atual (busca `126:102`, linha 0 `100:130`, Volume `325:155`, pílula
-  `416:486`):
+- **A janela dentro de um container de verdade** é provada hoje por
+  `pforge_vst3_probe --ui`: ele monta o bundle como um DAW, cria o container do
+  sistema (X11 sob Xvfb no Linux, HWND no Windows), chama `attached()`, bombeia a
+  fila e captura os pixels do filho. É o passo **C**/`C2` do CI. Fora da tela o
+  desenho funciona num servidor com compositor e **não** funciona num sem backing
+  store — ver a armadilha "Off-screen não tem bits" no `UI-KIT.md` §11.
+  O que esse probe **não** faz é gesto sintético: clique, arrasto, teclado e roda
+  eram o `pforge_ui_probe` do formato antigo (removido), que provou
+  `clique na lista → [20]=0.000` e `arrasto no volume → [3]=0.889 … 1.000`.
+- **Teclado e roda entraram no probe antigo na rodada do conceito v2**, e os dois
+  acharam defeito. A tabela abaixo é o contrato de gesto que o painel cumpre hoje
+  (as coordenadas são do layout 1000×520, busca `126:102`, linha 0 `100:130`,
+  Volume `325:155`, pílula `416:486`):
 
   | gesto | escrita esperada | resultado |
   |---|---|---|
@@ -988,20 +992,21 @@ knob levou 0.900 → 1.000.
   A linha de `100:130` é a que importa: antes dela `hitTest()` devolvia vazio para
   a lista inteira enquanto o véu estava no ar, e o único jeito de escolher um piano
   num painel frio era o botão do card. `--click` com `writes=0` foi a prova.
-- `pforge_host_test` roda o plugin com as portas 22/23 conectadas e o **teste I**
-  mede o que a UI vai ver: o worker não é drenado entre blocos (host de verdade
-  continua chamando `run()` enquanto o disco trabalha), e as asserções exigem
+- O teste I do harness antigo (removido) rodava o plugin com as saídas 22/23
+  conectadas e media o que a UI vai ver: a thread de carga não é drenada entre
+  blocos (host de verdade continua chamando `process()` enquanto o disco trabalha), e
+  as asserções exigiam
   `-3` durante o load, o índice publicado depois, `-2` no `-1` e `-4` no banco
   inválido — tudo isso com **p99.9 do bloco < 1 ms** (9 967 blocos medidos durante o
   load deram p99.9 = 0,119 ms, pior bloco 0,375 ms). A asserção já foi o pior bloco
   da série com teto de 2 ms e reprovou uma execução que estava 0,155 ms em tudo o
   mais: um bloco isolado atrasado é page cache e outro processo no disco, não é o
   plugin.
-- Dois `--sf2` na linha de comando do `pforge_host_test` ligam o **teste J**, o único
-  que roda o plugin **sem** `LV2_Worker_Schedule` nas features do `instantiate()`: a
-  thread de reserva faz o load, o swap e a liberação. As asserções são o som dos dois
+- O **teste J** do harness antigo rodava o plugin sem worker do host — e com o VST3
+  único esse é o único caminho que existe: a thread do plugin faz o load, o swap e a
+  liberação. As asserções eram o som dos dois
   bancos, `maxBlock < 1 ms` (a liberação do banco velho não pode cair no `run()`) e
-  a RSS caindo de verdade ao trocar para um banco menor. O `pforge_host_test` fecha
+  a RSS caindo de verdade ao trocar para um banco menor. O harness antigo fechava
   imprimindo `memoria: pico=… kB`, lido de dentro do processo. Medido no par de 49 MB
   + 16 MB: `pico=105 MB` com o estacionamento contra `141 MB` quando os dois são
   alocados juntos — os 141 MB são o que `pforge_dsp_stages --sf2 A --sf2b B` calcula
@@ -1025,27 +1030,26 @@ knob levou 0.900 → 1.000.
 - As três juntas substituem um host que não existe nesta máquina — e ainda assim
   nenhuma delas é o REAPER. O que cada uma não prova está na seção seguinte.
 
-### Conferido no REAPER 7.83 (o único host LV2 real da máquina)
+### Conferido no REAPER 7.83 quando o plugin era LV2
 
-Instalado em `~/.lv2` (md5 igual ao `build/`), aberto por linha de comando com um
-projeto `.rpp` e um script ReaScript posicionais:
-`reaper -nosplash -newinst -cfgfile <cfg> <projeto.rpp> <script.lua>`.
-
-O que o host realmente faz, medido e não suposto:
+O que o host realmente fez, medido e não suposto — vale como história do formato e
+como lista do que **ainda** tem de ser repetido com o `.vst3` (é o próximo passo):
 
 - **Não chama `idle()` nem `show()`.** É o que estava por trás da "tela preta" e o
-  que obrigou a regra 6. Com a thread própria, o painel aparece completo dentro da
-  janela de FX do REAPER.
-- **Aceita `lv2:worker` e `schedule_work()` responde sucesso — e nunca roda
+  que obrigou a regra 6 do §5. Com a thread própria, o painel aparece completo dentro
+  da janela de FX do REAPER. (No VST3 não existe `idle()`: o problema sumiu de raiz, e
+  é por isso que o shell não declara `IIdle`.)
+- **Aceitava o worker e `schedule_work()` respondia sucesso — e nunca rodava
   `work()` com o transporte parado.** Sem a thread de reserva do plugin, o painel
-  fica em `-3` para sempre. Foi exatamente o que aconteceu na primeira vez: a
-  escolha do piano não virava som nenhum no REAPER, e no `pforge_host_test` não,
-  porque o stub drena o worker ele mesmo. O watchdog de 2 s assume o load e o
-  `workerAlive` impede as duas vias de carregarem o mesmo banco.
+  ficava em `-3` para sempre. Foi exatamente o que aconteceu na primeira vez: a
+  escolha do piano não virava som nenhum no REAPER, e no harness não, porque o stub
+  drenava o worker ele mesmo. Com o VST3 não há worker a pedir: a thread de carga é
+  do plugin e isso deixa de ser uma aposta no host.
 - **Os índices que o host mostra não são os índices das portas**: `Volume` é o
-  parâmetro 0, mas `Banco de Piano` é 17 e `Estado do Banco` 19 (REAPER esconde as
+  parâmetro 0, mas `Banco de Piano` é 17 e `Estado do Banco` 19 (o REAPER esconde as
   portas de MIDI/atom e as saídas atrás de uma lista própria, 24 visíveis). Todo o
-  resto do teste se faz por nome, nunca por número.
+  resto do teste se faz por nome, nunca por número. No VST3 o host numera por
+  `ParamID`, que é a nossa ordem — mas a lição fica: **teste por nome**.
 - **Recall funciona e continua mudo**: `.rpp` salvo com `banco=-1` reabre com
   `banco=-1.0 estado=-2.0` e nenhum piano carregado.
 - **Áudio de verdade saindo do plugin dentro do host**, medido com
@@ -1078,32 +1082,30 @@ Armadilhas pagas no caminho (nenhuma delas é do plugin):
 
 ## 6. Estado, automação e save
 
-- **Automação**: os 17 params + `soundbank` + `preset` são control ports comuns
-  (portas 3…21) → o DAW automatiza e salva sozinho. Conferido no REAPER: escrever o
-  param pelo host (`TrackFX_SetParam`) chega como delta, o `run()` vê a mudança e o
-  load acontece — e os valores voltam iguais ao reabrir o `.rpp`. A UI guarda o último valor
-  escrito pra não recuar quando o host reenvia; host que não reenvia nada mostra
-  os defaults do TTL até o primeiro `port_event` — limitação LV2 conhecida.
-- **Saída de estado** (`bankState`/`presetCount`, portas 22/23): escritas no topo de
-  todo `run()`, sem alocação, lendo só atômicos (`writeStatusPorts()`). É o canal que
-  a UI usa pra saber o que o worker fez; `pforge_host_test --so …` confere os quatro
-  códigos sem host gráfico. Um host que não repassa `port_event` de saída não quebra
-  nada: a UI cai na estimativa de tempo e o rodapé avisa `sem resposta do plugin`.
-- **Worker**: implementado e obrigatório pro load. `run()` só compara a porta
-  `soundbank` com o último valor e agenda `LoadRequest`; o `Bank` é construído e
-  aquecido no worker, publicado por `std::atomic` exchange, e o banco velho é
-  liberado na thread do worker (nunca na de áudio). Host sem `lv2:worker` cai na
-  thread de load própria do plugin. `pforge_host_test` mede isso: 6,9 s de load
-  com `maxBlock` de 0,14 ms.
-  A thread de reserva **existe sempre**, mesmo com worker no host, porque um host
-  pode aceitar a feature e simplesmente não bombear `work()`: o REAPER faz isso com
-  o transporte parado, e o resultado sem a reserva é um `-3` eterno. Ela assume o
-  pedido depois de 2 s sem sinal de vida (`workerAlive`, setado dentro de `work()`)
-  e se segura pelo `loadingNow` CAS pra nunca carregar em cima do worker.
-- **LV2 state extension**: ainda **não** implementada. A decisão tomada foi
-  explícita: valor restaurado pelo host é baseline, não pedido — sessão salva
-  abre muda até você escolher de novo. Persistir o banco por caminho (`state`) é
-  o follow-up natural, em cima do `Bank` atual.
+- **Automação**: os 17 params, `Banco` e `Preset` são parâmetros VST3 de verdade →
+  o DAW automatiza e salva sozinho. Os dois últimos são `kIsHidden` (quem escolhe
+  piano é o painel, não a lista genérica do host) mas continuam automatizáveis e
+  viajam no estado. Conferido no REAPER com o shell LV2: escrever o param pelo host
+  chega como delta, o `process()` vê a mudança e o load acontece — e os valores
+  voltam iguais ao reabrir o `.rpp`. A UI guarda o último valor escrito pra não
+  recuar quando o host reenvia; host que não reenvia nada mostra os defaults de
+  `kParameterDefs` até o primeiro evento.
+- **Estado do painel** (`bankState`/`presetCount`, eventos 22/23): escritos no topo de
+  todo `process()`, sem alocação, lendo só atômicos (`StatusPorts.hpp`), e entregues à
+  view pelo mesmo callback de escrita. Não são parâmetros: um host sem editor aberto
+  não precisa deles, e um que os ignore não quebra nada — a UI cai na estimativa de
+  tempo e o rodapé avisa `sem resposta do plugin`. O `pforge_vst3_probe` confere os
+  quatro códigos sem interface gráfica.
+- **Carga**: `process()` só compara o valor publicado de `Banco` com o último que
+  viu e agenda `LoadRequest`; o `Bank` é construído e aquecido na thread do plugin,
+  publicado por `std::atomic` exchange, e o banco velho é liberado nessa mesma thread
+  (nunca na de áudio). Medido no harness antigo: 6,9 s de load com `maxBlock` de
+  0,14 ms — e como o caminho de carga é o mesmo, o número continua valendo.
+- **Estado (`setState`/`getState`)**: implementado, com magic + versão no começo e
+  **recusa** de blob estranho ou truncado (teste D do `pforge_vst3_probe`: lixo não
+  restaura nada em vez de virar som). O que ele guarda é o caminho do banco e o
+  preset — e restaurar é **pedido de som**: é assim que abrir uma sessão salva
+  devolve o piano que estava lá, sem que nada auto-carregue numa instância nova.
 
 ---
 
@@ -1117,7 +1119,6 @@ e o que elas permitem:
 | sfizz | BSD-2-Clause | ok (backend SFZ/SF3; não é vendorizado — é instalado ou passado em `-DSFIZZ_DIR`) |
 | tinysonic (`src/core/tsf.h`) | MIT / domínio público | ok — backend SF2 |
 | miniz (`third_party/miniz`) | MIT | ok (vendor) — inflate dos entries `.pforge` comprimidos |
-| LV2 headers (`third_party/lv2`) | ISC | ok — só headers, para as URIs e as interfaces |
 | stb (`third_party/stb`) | MIT / domínio público | ok — rasterização de fonte (`stb_truetype`) e decodificação da arte do `.pforge` (`stb_image`) |
 | DejaVu Sans / Bold / Serif / Mono | Bitstream Vera (redistribuição permitida com o nome preservado) | ok — vendorizadas em `assets/ui/`, copiadas pro bundle |
 
@@ -1132,7 +1133,7 @@ conteúdo próprio, CC0 ou CC-BY com os créditos no `manifest.credits[]`.
 
 ### a. Standalone
 
-Além do plugin LV2, o PianoForge precisa de uma versão standalone (executável CLI que roda sem host audio).
+Além do plugin VST3, o PianoForge precisa de uma versão standalone (executável CLI que roda sem host audio).
 
 **Estado atual (2026-10-26):**
 
@@ -1186,9 +1187,9 @@ O repo não carrega soundfont nenhum, então o teste de bundle usa fixture:
   `test.pforge` e o `verify` confere o CRC de cada entry; `bad.pforge` é o mesmo
   arquivo com **um byte invertido no payload**, usado pelo teste H (banco inválido não
   silencia o que está tocando).
-- Um `.pforge` entra em qualquer teste que aceita `.sf2` — `pforge_host_test --sf2
-  arquivo.pforge` roda a suíte inteira pelo caminho do bundle (diretório, CRC, inflate
-  e o `tsf_stream` lendo na posição certa).
+- Um `.pforge` entra em qualquer ferramenta que aceita um banco — `pforge_standalone
+  --bank arquivo.pforge` e `pforge_dsp_stages --sf2 arquivo.pforge` exercitam o
+  caminho do bundle (diretório, CRC, inflate e o `tsf_stream` lendo na posição certa).
 - **`pack` grava entry por basename e o `verify` recusa `imagem` com `/`** — a
   restrição é do empacotador, não do leitor: `src/core/Bundle.cpp` aceita nome exato ou
   sufixo. `"imagem": ""` é rejeitado pelo verify como referência a blob inexistente;
@@ -1198,40 +1199,44 @@ O repo não carrega soundfont nenhum, então o teste de bundle usa fixture:
 
 1. ~~`delayFrames` ignorado~~ — **resolvido**: `Engine` agora enfileira os eventos
    do bloco (array fixo, sem alocação no RT) e `render()` fatia o bloco nos
-   instantes em que algo vence, aplicando cada evento na sua amostra. Medido por
-   `pforge_host_test` teste F: notas com delay 0/200/400 num bloco de 512 têm
-   onset nas amostras 4/201/400. Consequência: `process()` virou `render()` e o
-   `pitchValue` de bend passou a ser assinado (-8192..8191) na porta do LV2.
-2. ~~Port de status (ou `lv2:state` na UI) pra trocar o chute de "FORJANDO" por
-   feedback real do worker~~ — **resolvido** sem `state`: as portas de saída 22
-   (`bankState`) e 23 (`presetCount`) são escritas no topo de `run()` e a UI lê por
-   `port_event`. Medido pelo `pforge_host_test` teste I (worker não drenado entre
+   instantes em que algo vence, aplicando cada evento na sua amostra. Medido no
+   teste F do harness antigo: notas com delay 0/200/400 num bloco de 512 têm
+   onset nas amostras 4/201/400. Consequência: `render()` fatia o bloco e o
+   valor de bend é assinado (-8192..8191) no parâmetro que o shell entrega.
+2. ~~Porta de status (ou estado na UI) pra trocar o chute de "FORJANDO" por
+   feedback real da carga~~ — **resolvido**: os eventos de saída 22 (`bankState`) e
+   23 (`presetCount`) são escritos no topo de `process()` e a UI os recebe pelo
+   callback de escrita. Medido no teste I do harness antigo (carga não drenada entre
    blocos, como num host real): `-3` durante, índice publicado depois, `-2` no
    `-1`, `-4` no banco inválido.
 3. ~~Preset no painel~~ — **resolvido**: pílula `◂ PRESET i/N ▸` no rodapé, escrita
-   na porta 21 por clique, roda do mouse e ← →. Aparece só quando a porta 23 informa
-   mais de um preset. Prova no X11 real: `pforge_ui_probe --port 22:0 --port 23:62
+   no evento 21 por clique, roda do mouse e ← →. Aparece só quando o evento 23 informa
+   mais de um preset. Prova no X11 real (probe antigo): `--port 22:0 --port 23:62
    --port 21:7 --click 583:479` → `[21]=8.000` e o rodapé passa a ler `preset 9/62`
-   (o host devolve o valor escrito como `port_event`, então o número na tela é o que
+   (o shell devolve o valor aplicado, então o número na tela é o que
    o plugin recebeu, não o que a UI pediu).
 4. ~~Bundle `.pforge` no plugin~~ — **resolvido** (`src/core/Bundle.{hpp,cpp}`,
    seção 2), e o painel já mostra o manifest (regra 12 da seção 5). O que falta do
-   bundle é aplicar `presets[].params` — que exige `lv2:state`, item 6.
-5. ~~Testar a UI num host LV2 de verdade~~ — **resolvido no REAPER 7.83**
-   (`/opt/REAPER`, bundle em `~/.lv2` com md5 igual ao build). O painel pinta
-   dentro da janela de FX, clique e arrasto reais escrevem as portas 20 e 3, o
-   `estado` publicado é lido pelo host (`-2 → -3 → 0`), recall volta `banco=-1` e
-   o pico medido no master é −4,00 dBFS tocando e 0,00000000 sem escolher piano.
-   Duas coisas que só um host de verdade ensinaram, e que já estão pagas: ele não
-   chama `idle()`/`show()` (regra 6 da seção do embed) e aceita `lv2:worker` sem nunca
-   rodar `work()` com o transporte parado (thread de reserva com watchdog de 2 s).
-   Detalhe em "Conferido no REAPER 7.83".
+   bundle é aplicar `presets[].params` — que exige um caminho que o host grave
+   junto (`setState`), item 6.
+5. ~~Testar a UI num host de verdade~~ — **resolvido no REAPER 7.83, quando o
+   plugin era LV2** (`/opt/REAPER`, bundle em `~/.lv2` com md5 igual ao build). O
+   painel pintava dentro da janela de FX, clique e arrasto reais escreviam as portas
+   20 e 3, o `estado` publicado era lido pelo host (`-2 → -3 → 0`), recall voltava
+   `banco=-1` e o pico medido no master foi −4,00 dBFS tocando e 0,00000000 sem
+   escolher piano. Com o shell VST3 o caminho equivalente já existe
+   (`pforge_vst3_probe` abre o bundle como um DAW e, com `--ui`, entrega um container
+   de verdade), e **repetir isso num REAPER com o `.vst3` é o próximo passo**.
+   Duas coisas que só um host de verdade ensinaram: ele não chama `idle()`/`show()`
+   (regra 6 da seção do embed) e aceita worker sem nunca bombear o load — o que no
+   VST3 deixou de ser uma aposta, porque a thread de carga é do plugin.
+   Detalhe em "Conferido no REAPER 7.83 quando o plugin era LV2".
 6. **Aplicar `manifest.presets[].params`** — hoje o painel lê o bundle e mostra
    nome/arte, mas nenhum param do manifest vira valor de knob. Não é descuido: os
    17 valores têm de chegar ao plugin por um caminho que o host grave junto, senão
    a tela e o áudio divergem (a mesma classe de bug da regra 7 da seção do embed).
-   O caminho é `lv2:state` na UI + um "carregar preset do bundle" que escreva as
-   portas visíveis e ocultas de uma vez, com o host vendo cada escrita.
+   O caminho é `setState`/`getState` + um "carregar preset do bundle" que escreva os
+   17 parâmetros de uma vez, com o host vendo cada escrita.
 7. **Fazer o SF2 caber em menos RAM** — o piso de §1 (2× o arquivo, medido no
    `tsf_load`) só cai com um sampler que leia `int16` na hora ou faça streaming do
    `smpl` com cache. Isso não é otimização, é outra decisão de produto: muda o som
@@ -1251,14 +1256,16 @@ O repo não carrega soundfont nenhum, então o teste de bundle usa fixture:
 ## 9. Checklist do que existe
 
 1. ✅ Bundle `.pforge` (empacotador/verificador `packaging/bundle.py`), sfizz, toolchain
-2. ✅ Wrapper LV2: 24 ports (22 entradas de controle/áudio/MIDI + 2 saídas de
-     estado), atom MIDI, `lv2:worker`, sem auto-load
+2. ✅ Shell VST3: componente+processador+editor num objeto, 17 parâmetros (+ `Banco`
+     e `Preset` escondidos), barramento estéreo, `IEventList`, `setState`/`getState`,
+     sem auto-load
 3. ✅ Backends de amostra com troca segura fora da thread de áudio
 4. ✅ DSP chain v1 (itens da seção 4)
-5. ✅ UI "Forja de Pianos" (X11UI, framebuffer próprio, 10 knobs + seletor de banco
-     + seletor de preset)
-6. ✅ Harness offline: `pforge_host_test` (silêncio/load/retire/baseline/status) e
-     `pforge_ui_preview` / `pforge_ui_probe` (visual e interação sem DAW)
+5. ✅ UI "Forja de Pianos" (janela própria, framebuffer ARGB32, 17 knobs em duas
+     páginas + seletor de banco + seletor de preset)
+6. ✅ Harnesses offline: `pforge_vst3_probe` (fábrica, parâmetros, estado, áudio e
+     painel num container de verdade), `pforge_dsp_stages` (custo por estágio e o gate
+     `--pedalload`) e `pforge_ui_preview` (visual sem host)
 7. ✅ plugin lê e toca um `.pforge` (CRC, inflate, stream), recusando bundle
      corrompido sem silenciar o piano em uso
 8. ✅ feedback real do worker na UI (`bankState`) — "FORJANDO"/"NAO ABRIU"/"piano na
@@ -1266,21 +1273,22 @@ O repo não carrega soundfont nenhum, então o teste de bundle usa fixture:
 9. ✅ standalone ao vivo: `--live` toca na placa (ALSA por `dlopen`, `default` via
      PipeWire) com o teclado do computador como MIDI; `--device none --out` grava a
      mesma execução e `--feed` a reproduz sem ninguém tocando
-10. ✅ verificação num host LV2 real (REAPER 7.83): painel, portas, recall, worker
-     não-bombeado e áudio no master
+10. ⬜ verificação num DAW de verdade com o `.vst3`: painel, parâmetros, recall e áudio
+     no master. O equivalente LV2 foi feito no REAPER 7.83 antes da virada, e o caminho
+     VST3 já é exercitado pelo `pforge_vst3_probe`
 11. ✅ painel lê o manifest do `.pforge`: nome do produto na lista e no rodapé,
      arte de `presets[].imagem` na placa e nome de preset na linha miúda quando a
      contagem casa com a porta 23
-12. ⬜ aplicar `presets[].params` (exige `lv2:state` — item 6 do §8c)
+12. ⬜ aplicar `presets[].params` (exige `setState`/`getState` — item 6 do §8c)
 13. ✅ orçamento medido, não estimado: custo por estágio e por fronteira (§4), RAM por
-     banco e pico da troca (§1). O swap nunca segura dois bancos no ar, o caminho sem
-     `lv2:worker` não liberta banco dentro de `run()` (8,471 ms → 0,509 ms medidos), e
+     banco e pico da troca (§1). O swap nunca segura dois bancos no ar, nenhum
+     caminho liberta banco dentro de `process()` (8,471 ms → 0,509 ms medidos), e
      as duas otimizações que a medição rejeitou estão escritas em §1 em vez de no código
 14. ✅ master com teto assintótico: nenhuma saída do plugin atinge 0 dBFS (era o que
      achatava as 78 amostras na gravação do usuário; §4 "O teto do master"). O ganho em
      si não mudou — a folga de volume é decisão de ouvido
 15. ✅ release automático para os três sistemas (`.github/workflows/release.yml`):
-     Linux/Windows (MSVC)/macOS (universal), com as cinco provas A–E da seção 11 do
-     `UI-KIT.md` rodando em cada um contra bancos **sintéticos** (`--makesf2`), porque
+     Linux/Windows (MSVC)/macOS (universal), com as provas A–E da seção de verificação
+     do `UI-KIT.md` rodando em cada um contra bancos **sintéticos** (`--makesf2`), porque
      o repositório não distribui soundfont. O que isto ainda não provou: MSVC e Cocoa
      nunca foram compilados fora do runner — a validação é a primeira execução do CI.

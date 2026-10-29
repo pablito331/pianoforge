@@ -16,9 +16,9 @@
 //        --work <dir>   onde gravar o SF2 sintetico (o sandbox do CI pode barrar
 //                       o diretorio temporario do sistema, e um load que nao
 //                       acontece daria "FALHOU: sem som" sem dizer por que)
-//        --ui           abre o painel e confere os pixels (so no Windows, onde o
-//                       pai de teste e um HWND; no X11 isso pediria Xvfb+janela
-//                       propria, e o alvo do CI de UI e o pforge_ui_probe)
+//        --ui           abre o painel e confere os pixels: no Windows o pai e um
+//                       HWND, no Linux um container X11 (o CI sobe um Xvfb). No
+//                       macOS nao ha prova de UI em CI.
 //
 // Sai com 0 quando tudo passa e 1 quando algo falha: e o que o CI le.
 #include "Parameters.hpp"
@@ -489,9 +489,9 @@ bool testAudio(Plugin& p, const char* bankPath) {
 
     // A carga roda na thread do plugin: os primeiros blocos sao mudos de
     // proposito (RAM antes de I/O), e a nota mandada antes de o banco existir e
-    // descartada -- como no LV2. Por isso a nota e reenviada a cada 250 ms: um
-    // host de verdade so toca depois de o usuario escolher o piano, e aqui quem
-    // escolhe e o estado que acabou de chegar.
+    // descartada. Por isso a nota e reenviada a cada 250 ms: um host de verdade so
+    // toca depois de o usuario escolher o piano, e aqui quem escolhe e o estado que
+    // acabou de chegar.
     auto sendNoteOn = [&events] {
         Vst::Event& on = events.add();
         on.type = Vst::Event::kNoteOnEvent;
@@ -674,11 +674,11 @@ bool testView(Plugin& p) {
 }
 
 // -------------------------------------------------- G: container apertado
-// O REAPER 7.83 entrega ui:parent com 65x86 (o placeholder dele) e cresce o
-// container quando aplica o ui:resize. Um painel que adota o tamanho visto no
-// instantiate e para fica espremido num canto para sempre -- foi o que apareceu
-// como "o LV2 abriu minusculo". Aqui o host se comporta do mesmo jeito: container
-// pequeno, attached, e o container cresce 400 ms depois.
+// O REAPER 7.83 abre o editor num placeholder de 65x86 e so depois cresce o
+// container. Um painel que adota o tamanho visto no attached() e para fica
+// espremido num canto para sempre -- foi o que apareceu como "o plugin abriu
+// minusculo". Aqui o host se comporta do mesmo jeito: container pequeno,
+// attached, e o container cresce 400 ms depois.
 bool testContainerApertado(Plugin& p) {
 #if !defined(_WIN32)
     note("G: container apertado so no Win32 (no X11 o host redimensiona o filho");

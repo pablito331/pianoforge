@@ -1,6 +1,7 @@
 // SF2 sintetico para as ferramentas de verificacao.
 //
-// Existe porque a suíte A-M do pforge_host_test e as medidas de custo do
+// Existe porque as provas do CI (o `--pedalload`, o render do standalone e o
+// pforge_vst3_probe) e as medidas de custo do
 // pforge_dsp_stages precisam de um banco REAL passando pelo tsf (leitura hydra,
 // conversao int16->float, alocacao de voz, o amortecedor progressivo do
 // PIANOFORGE), e o CI nao pode baixar soundfont de terceiros: amostra de piano
@@ -360,7 +361,7 @@ inline bool build(const std::string& path, const Config& c, std::string& err) {
     put16(ifil, 4);                       // SF2 2.4
     putName(isng, "PianoForge synth", 20);
     putName(inam, "PianoForge Synthetic", 24);
-    putName(isft, "pforge_host_test", 24);
+    putName(isft, "pianoforge", 24);
     putName(icrd, "2026 PianoForge", 16);
     putName(ieng, "tools/SynthBank.hpp", 20);
     putChunk(info, "ifil", ifil);

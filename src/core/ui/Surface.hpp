@@ -1,8 +1,8 @@
 #pragma once
 // Surface: framebuffer ARGB32 (0xAARRGGBB) desenhado em software, sem Cairo,
 // sem FreeType, sem GL. E a unica forma de a UI do plugin ser identica dentro
-// do X11UI e dentro do pforge_ui_preview (que renderiza offscreen pra eu
-// conferir o visual sem host LV2 instalado).
+// da janela do plugin e dentro do pforge_ui_preview (que renderiza offscreen pra eu
+// conferir o visual sem host nenhum).
 //
 // Antialiasing por distancia assinada: cada primitiva circular/arredondada sabe
 // a quantos pixels do seu contorno o centro do pixel esta, e a cobertura e

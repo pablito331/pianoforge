@@ -15,8 +15,14 @@ Para abrir diretamente a prévia do estado ativo que acompanha o conceito, use `
 - Filtre bancos pela busca, adicione arquivos/pastas locais e remova itens da lista.
 - Selecione banco para ver estados de carregamento e pronto; use as setas de preset quando houver mais de um.
 
-## Integração LV2
+## Integração com o plugin
 
-A pasta `lv2-integration/` contém a camada C++17 de comunicação com as portas LV2 (bridge, callbacks e header público). Ela foi validada sintaticamente com tipos LV2 temporários, mas ainda precisa ser ligada ao renderer, à janela X11/XEmbed, ao CMake e às classes reais do repositório.
+Este documento é o conceito visual, e só isso. Quando foi escrito, a ponte entre o HTML e
+o plugin era planejada sobre as portas do LV2; o plugin é hoje **VST3 único**, e o painel
+compila dentro do próprio binário — a referência vigente para a ponte é o `UI-KIT.md` na
+raiz, não esta pasta. Nada aqui precisa ser portado: o protótipo serve para julgar
+geometria, paleta e gesto.
 
-O HTML não toca áudio nem lê o conteúdo de SF2/SFZ/PFORGE, não altera o estado da DAW e não salva parâmetros no plugin. Os bancos e tamanhos iniciais são dados ilustrativos. O protótipo serve como conceito visual e referência funcional para portar o layout ao renderer C++/LV2.
+O HTML não toca áudio nem lê o conteúdo de SF2/SFZ/PFORGE, não altera o estado da DAW e
+não salva parâmetros no plugin. Os bancos e tamanhos iniciais são dados ilustrativos. O
+protótipo serve como conceito visual e referência funcional para o layout do renderer C++.

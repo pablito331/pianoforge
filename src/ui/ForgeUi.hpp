@@ -2,10 +2,10 @@
 // Controlador portavel da UI "Forja de Pianos".
 //
 // Ele e tudo o que nao e janela: o PanelState, o hit-test, os gestos (clique,
-// arrasto, roda, tecla), o protocolo das portas LV2, o registro de soundfonts e
-// o render do painel numa Surface ARGB. O que sobra para a camada de plataforma
-// e pouco: criar/adoptar o window filho, traduzir eventos nativos em chamadas
-// daqui, apresentar a Surface e abrir o dialogo de arquivo nativo.
+// arrasto, roda, tecla), o protocolo das portas do painel, o registro de
+// soundfonts e o render do painel numa Surface ARGB. O que sobra para a camada de
+// plataforma e pouco: criar/adoptar o window filho, traduzir eventos nativos em
+// chamadas daqui, apresentar a Surface e abrir o dialogo de arquivo nativo.
 //
 // Por que isso existe: o desenho ja era compartilhado com o pforge_ui_preview
 // (src/core/ui/), mas a janela era X11 puro e nao havia como levar o painel a
@@ -19,8 +19,6 @@
 
 #include "ForgePanel.hpp"
 
-#include <lv2/ui/ui.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -31,6 +29,14 @@
 
 namespace pfui {
 
+// O contrato com o shell do plugin. O painel escreve por este callback e o shell
+// devolve eventos pela mesma numeracao de portas (ver StatusPorts.hpp): era o par
+// (LV2UI_Write_Function, LV2UI_Controller) enquanto havia formato LV2, e agora e
+// este typedef -- nenhum cabecalho de formato entra no controlador. O shell VST3
+// liga o callback em IEditController::setParamNormalized.
+using WriteFunction = void (*)(void* controller, std::uint32_t port, std::uint32_t size,
+                               std::uint32_t format, const void* buffer);
+
 // Teclas que o painel entende, nos tres SOs. Um backend traduz o seu codigo
 // nativo (X keysym, VK_*, keycode do Cocoa) para ca; o que nao estiver aqui
 // chega como UiKey::Text com o texto UTF-8 correspondente, se houver.
@@ -38,15 +44,14 @@ enum class UiKey { Text, Backspace, Escape, Return, Up, Down, Left, Right };
 
 class ForgeUi {
 public:
-    ForgeUi(const std::string& bundlePath, LV2UI_Write_Function writeFn,
-            LV2UI_Controller controller);
+    ForgeUi(const std::string& bundlePath, WriteFunction writeFn, void* controller);
     virtual ~ForgeUi();
 
     static int preferredWidth();
     static int preferredHeight();
 
     // ------------------------------------------------------------------
-    // Chamadas do host LV2
+    // Chamadas do shell (VST3): evento de porta, idle, show/hide
     // ------------------------------------------------------------------
     // port_event vem da thread principal do host e NUNCA desenha: pintar de
     // aqui seria um blit numa conexao que nao e da thread da UI.
@@ -137,8 +142,8 @@ protected:
     pforge::Layout layout_;
     int winW_ = 0, winH_ = 0;
 
-    LV2UI_Write_Function write_ = nullptr;
-    LV2UI_Controller controller_ = nullptr;
+    WriteFunction write_ = nullptr;
+    void* controller_ = nullptr;
     std::atomic<bool> needDraw_{true};
     bool closed_ = false;
     bool hasEventThread_ = false;      // false: o idle() do host e o nosso pump

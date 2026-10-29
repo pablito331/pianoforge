@@ -263,7 +263,7 @@ Layout layoutFor(int w, int h, int artH) {
 
     // Knobs: .knob-stack (coluna, space-evenly) para 1-2 por card, .body-grid
     // (2x2) para o CORPO. O box do knob e 78 px no prototipo; se a coluna for
-    // mais estreita que isso ele encolhe junto, porque host LV2 redimensiona.
+    // mais estreita que isso ele encolhe junto, porque o host redimensiona.
     for (int g = 0; g < 5; ++g) {
         const GroupDef& def = kGroups[g];
         const Rect& card = l.groupCard[g];

@@ -1,6 +1,7 @@
 // Medida do custo de cada estagio da cadeia de timbre, por chamada e por amostra.
 //
-// Por que isto existe: o teste G do pforge_host_test diz que um bloco de 512 com
+// Por que isto existe: o teste G do harness antigo (o pforge_host_test, que so
+// existia com o formato LV2) dizia que um bloco de 512 com
 // automacao densa custa ~0,7 ms, e que quase tudo disso vem das ~32 FRONTIERAS de
 // fatia, nao das vozes. "Fronteira" e uma chamada a renderSlice() com 16 amostras.
 // Ou seja, o que importa e o custo FIXO de chamar cada estagio, que o numero por
