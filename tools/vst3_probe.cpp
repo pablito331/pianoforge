@@ -740,6 +740,98 @@ bool testContainerApertado(Plugin& p) {
 #endif
 }
 
+// --------------------------------------------------------- H: a pagina MOTOR
+// Os sete parametros do motor deixaram de ser chip de leitura e viraram knob. O
+// que este teste prova e o caminho INTEIRO: o clique na aba chega ao painel, o
+// arrasto num disco do MOTOR sai pela porta 3+ParameterId e o HOST ve o valor
+// novo. Sem ele, "agora da para editar" seria so desenho -- e desenho ja abriu
+// sem fonte uma vez neste projeto.
+bool testPaginaMotor(Plugin& p) {
+#if !defined(_WIN32)
+    note("H: clique e arrasto so no Win32 neste probe (o X11 pediria Xvfb)");
+    return true;
+#else
+    IPlugView* view = p.controller->createView(Vst::ViewType::kEditor);
+    if (!expect(view != nullptr, "H: createView(kEditor) para a pagina MOTOR")) return false;
+
+    WNDCLASSA wc{};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(nullptr);
+    wc.lpszClassName = "PianoForgeProbeMotor";
+    RegisterClassA(&wc);
+    // Cliente de exatamente 1000x520, o tamanho de desenho: as coordenadas abaixo
+    // sao as do layout real e so valem neste tamanho.
+    HWND host = CreateWindowExA(0, wc.lpszClassName, "motor", WS_POPUP, 0, 0, 1000, 520,
+                                nullptr, nullptr, wc.hInstance, nullptr);
+    if (!expect(host != nullptr, "H: container de 1000x520")) {
+        view->release();
+        return false;
+    }
+    ShowWindow(host, SW_SHOWNA);
+    expect(view->attached(host, kPlatformTypeHWND) == kResultOk, "H: attached no container");
+    bombear(400);
+
+    HWND child = painelDentroDe(host);
+    if (!expect(child != nullptr, "H: painel criado")) {
+        view->removed();
+        DestroyWindow(host);
+        view->release();
+        return false;
+    }
+    RECT cr{};
+    GetClientRect(child, &cr);
+    if (!expect(cr.right - cr.left == 1000 && cr.bottom - cr.top == 520,
+                "H: painel em 1000x520 (sem isso as coordenadas abaixo mentem)")) {
+        note("H: painel veio %ldx%ld", long(cr.right - cr.left), long(cr.bottom - cr.top));
+        view->removed();
+        DestroyWindow(host);
+        view->release();
+        return false;
+    }
+
+    using Steinberg::Vst::ParamID;
+    constexpr int kMotor = pianoforge::Param_ReverbType;   // o primeiro do MOTOR
+    double antes[7] = {};
+    for (int i = 0; i < 7; ++i) antes[i] = p.controller->getParamNormalized(ParamID(kMotor + i));
+    double antesTimbre[10] = {};
+    for (int i = 0; i < 10; ++i) antesTimbre[i] = p.controller->getParamNormalized(ParamID(i));
+
+    // As abas: o cabecalho do painel e uma faixa de 38 px a partir de (253,8); as
+    // duas abas de 62x18 comecam em 280 e 346. O centro da MOTOR e (377,27) --
+    // numero lido do PNG de `pforge_ui_preview --page 1`, nao adivinhado.
+    SendMessageA(child, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(377, 27));
+    SendMessageA(child, WM_LBUTTONUP, 0, MAKELPARAM(377, 27));
+    bombear(200);
+
+    // O primeiro disco do MOTOR (Sala): centro em (355,160), tambem medido do
+    // mesmo PNG. Arrastar 60 px para cima anda 1/3 do curso de um knob.
+    SendMessageA(child, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(355, 160));
+    for (int i = 1; i <= 6; ++i) {
+        SendMessageA(child, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(355, 160 - i * 10));
+        bombear(20);
+    }
+    SendMessageA(child, WM_LBUTTONUP, 0, MAKELPARAM(355, 100));
+    bombear(200);
+
+    int movedMotor = 0, movedTimbre = 0;
+    for (int i = 0; i < 7; ++i)
+        if (p.controller->getParamNormalized(ParamID(kMotor + i)) != antes[i]) ++movedMotor;
+    for (int i = 0; i < 10; ++i)
+        if (p.controller->getParamNormalized(ParamID(i)) != antesTimbre[i]) ++movedTimbre;
+    note("H: %d parametro(s) do motor mudaram, %d do timbre", movedMotor, movedTimbre);
+    expect(movedMotor == 1, "H: o arrasto num disco do MOTOR chega ao host");
+    expect(movedTimbre == 0, "H: o arrasto do MOTOR nao mexe em disco do TIMBRE");
+
+    const Captura cap = capturarPainel(child);
+    expect(cap.pintou(), "H: o painel do motor tambem pinta");
+
+    view->removed();
+    DestroyWindow(host);
+    view->release();
+    return true;
+#endif
+}
+
 // ------------------------------------------------------------------ main
 
 } // namespace
@@ -813,6 +905,7 @@ int main(int argc, char** argv) {
     if (wantUi) {
         testView(plugin);
         testContainerApertado(plugin);
+        testPaginaMotor(plugin);
     }
 
     plugin.unload();

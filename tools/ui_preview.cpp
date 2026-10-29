@@ -4,6 +4,7 @@
 //
 //   ./build/pforge_ui_preview --state loading --value hammer=0.9 --out /tmp/a.ppm
 //   ./build/pforge_ui_preview --status ready --presets 592 --preset 7 --selected 1
+//   ./build/pforge_ui_preview --page 1 --out /tmp/motor.ppm     # a chapa MOTOR
 // `--status` e a porta 22 do plugin (none|loading|ready|failed): sem ela o
 // painel mostra o que a UI chuta sozinha, sem canal de status.
 //
@@ -126,6 +127,7 @@ int main(int argc, char** argv) {
     std::string filter;              // --filter: o que foi digitado na busca
     std::string toastSpec;           // --toast: aviso vivo no rodape
     int selected = -1;
+    int page = 0;                    // --page: 1 = a chapa MOTOR (os sete escondidos)
     float time = 0.0f;
     std::vector<std::string> overrides;
 
@@ -145,6 +147,7 @@ int main(int argc, char** argv) {
         else if (a == "--filter") filter = next("");
         else if (a == "--toast") toastSpec = next("");
         else if (a == "--selected") selected = std::atoi(next("-1"));
+        else if (a == "--page") page = std::atoi(next("0"));
         else if (a == "--time") time = std::atof(next("0"));
         else if (a == "--value") overrides.push_back(next(""));
         else { std::fprintf(stderr, "opcao desconhecida: %s\n", a.c_str()); return 2; }
@@ -158,9 +161,10 @@ int main(int argc, char** argv) {
     }
 
     PanelState st;
+    st.page = page;
     for (int pid = 0; pid < pianoforge::Param_Count; ++pid) {
         const auto& def = pianoforge::kParameterDefs[pid];
-        if (!def.isVisible || pid >= kKnobCount) continue;
+        if (pid >= kKnobCount) continue;
         KnobState& knob = st.knobs[pid];          // INDEXADO POR ParameterId
         knob.port = 3 + pid;
         knob.label = def.shortName;

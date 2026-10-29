@@ -59,7 +59,7 @@ diz respeito à UI diretamente — mas explica por que a porta 22 existe (§5).
 | 1 | `out_right` | out | audio | |
 | 2 | `midi_in` | in | atom:Sequence, `midi:MidiEvent` | |
 
-### Os 10 knobs (são os `ParameterId` 0..9, e o painel desenha nesta ordem de tela)
+### Os 10 knobs do TIMBRE (são os `ParameterId` 0..9, e o painel desenha nesta ordem de tela)
 
 | # | símbolo | nome (host) | rótulo curto (tela) | min | max | default | o que faz |
 |---|---|---|---|---|---|---|---|
@@ -74,7 +74,7 @@ diz respeito à UI diretamente — mas explica por que a porta 22 existe (§5).
 | 11 | `chorus` | Chorus | Chorus | 0 | 1 | **0.0** | desligado por padrão |
 | 12 | `Reverb (Ambiência)` → `reverb` | Reverb (Ambiência) | Reverb | 0 | 1 | 0.10 | sala |
 
-### Os 7 escondidos (portas 13..19 — **não** viram knob arrastável)
+### Os 7 do MOTOR (portas 13..19 — knobs da segunda aba)
 
 | # | símbolo | min | max | default | nota |
 |---|---|---|---|---|---|
@@ -86,8 +86,12 @@ diz respeito à UI diretamente — mas explica por que a porta 22 existe (§5).
 | 18 | `sympTune` | 0 | 1 | 0.5 | |
 | 19 | `engineTune` | −100 | 100 | 0 | cents, bipolar |
 
-No painel atual eles aparecem como **texto miúdo no rodapé**, o que é a regra do
-PIANOFORGE.md §5: parâmetro escondido não é controle arrastável, é informação.
+Até out/2026 eles eram **texto miúdo no rodapé** e não se editavam. Agora são knobs da
+aba **MOTOR** (`TIMBRE | MOTOR` no cabeçalho, grade 4×2 dentro da chapa `06 MOTOR`),
+com o mesmo arrasto/roda/duplo-clique dos dez do TIMBRE e escrevendo nas mesmas portas
+13..19. Os chips do rodapé ficaram como leitura. O `hammer` (porta 4) também mudou de
+escala: `Engine::applyNoteOn` multiplica o valor por 0.10, então 100% do knob vale o
+que 10% valia antes.
 
 ### Banco, preset e estado
 

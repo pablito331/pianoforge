@@ -201,6 +201,11 @@ jobs:
           "$EXE_pforge_ui_preview" --state normal --status ready --presets 2 --preset 1 \
             --out painel.ppm
           test -s painel.ppm
+          # A aba MOTOR tem layout proprio (sete discos numa grade 4x2 dentro de
+          # uma chapa so). Se ela quebrar, tem de quebrar aqui -- e nao na janela
+          # de quem clicou na aba.
+          "$EXE_pforge_ui_preview" --page 1 --status ready --out motor.ppm
+          test -s motor.ppm
 
       # O plugin abre mudo por decisao do produto; entao a prova de audio do VST3
       # e a mesma do LV2: entrega um estado que aponta para um banco sintetico e

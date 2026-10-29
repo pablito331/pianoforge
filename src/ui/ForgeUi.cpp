@@ -59,18 +59,19 @@ ForgeUi::ForgeUi(const std::string& bundlePath, LV2UI_Write_Function writeFn,
     : write_(writeFn), controller_(controller), bundlePath_(bundlePath) {
     loadFonts(bundlePath);
 
-    // O painel indexa knobs[] por ParameterId (kGroups decide o card e a posicao
-    // dentro dele), e os dez visiveis sao exatamente as portas 3..12.
+    // O painel indexa knobs[] por ParameterId: os dez visiveis sao o TIMBRE e os
+    // sete seguintes sao o MOTOR, que ate agora nao viravam controle. Todos tem
+    // porta propria (3..19), entao o mesmo writePort serve aos dois.
     int slot = 0;
-    for (int pid = 0; pid < pianoforge::Param_Count && slot < kKnobCount; ++pid) {
+    for (int pid = 0; pid < pianoforge::Param_Count && pid < kKnobCount; ++pid) {
         const auto& def = pianoforge::kParameterDefs[pid];
-        if (!def.isVisible) continue;
-        if (pid != slot) {
+        if (def.isVisible && pid != slot) {
             std::fprintf(stderr,
                          "[PianoForge] knob %d espera ParameterId %d, veio %d: "
                          "o painel assume que os dez visiveis sao os dez primeiros\n",
                          slot, slot, pid);
         }
+        if (def.isVisible) ++slot;
         KnobState& k = state_.knobs[pid];
         k.port = int(kPortParamBase + pid);
         k.label = def.shortName;
@@ -82,7 +83,6 @@ ForgeUi::ForgeUi(const std::string& bundlePath, LV2UI_Write_Function writeFn,
         k.defValue = def.defaultValue;
         k.value = def.defaultValue;
         k.bipolar = def.minValue < 0.0f;
-        ++slot;
     }
     rebuildHiddenChips();
     rescan();
@@ -274,12 +274,12 @@ void ForgeUi::applyPortEvent(uint32_t port, uint32_t bufferSize, uint32_t format
     }
     if (port >= kPortParamBase && port < kPortParamBase + pianoforge::Param_Count) {
         const int pid = int(port - kPortParamBase);
-        if (pianoforge::kParameterDefs[pid].isVisible && pid < kKnobCount) {
-            state_.knobs[pid].value = v;
-            needDraw_ = true;
-        } else if (!pianoforge::kParameterDefs[pid].isVisible) {
-            noteHiddenValue(pid, v);
-        }
+        // knobs[] tem Param_Count posicoes: o valor do MOTOR entra no mesmo array
+        // do TIMBRE, senao a pagina do motor mostraria o default para sempre sob
+        // automacao. Os chips do rodape seguem lendo dos mesmos numeros.
+        state_.knobs[pid].value = v;
+        needDraw_ = true;
+        if (!pianoforge::kParameterDefs[pid].isVisible) noteHiddenValue(pid, v);
     }
 }
 
@@ -326,6 +326,7 @@ void ForgeUi::refreshStateSub() { state_.stateSub = stateSubLine(state_); }
 void ForgeUi::updateHover(int x, int y) {
     const Hit h = hitTest(layout_, state_, x, y);
     int newHoverKnob = (h.kind == HitKind::Knob) ? h.index : -1;
+    const int newHoverTab = (h.kind == HitKind::Page) ? h.index : -1;
     int newHoverBank = -1;
     if (h.kind == HitKind::BankRow) newHoverBank = h.index;
     else if (h.kind == HitKind::Browse) newHoverBank = -2;
@@ -336,10 +337,11 @@ void ForgeUi::updateHover(int x, int y) {
     const int newHoverPreset = h.kind == HitKind::PresetDec ? 0
                                : h.kind == HitKind::PresetInc ? 1 : -1;
     if (newHoverKnob != state_.hoverKnob || newHoverBank != state_.hoverBank ||
-        newHoverPreset != state_.hoverPreset) {
+        newHoverPreset != state_.hoverPreset || newHoverTab != state_.hoverTab) {
         state_.hoverKnob = newHoverKnob;
         state_.hoverBank = newHoverBank;
         state_.hoverPreset = newHoverPreset;
+        state_.hoverTab = newHoverTab;
         needDraw_ = true;
     }
 }
@@ -409,6 +411,13 @@ void ForgeUi::onPress(int x, int y, double timeSec) {
             needDraw_ = true;
             break;
         case HitKind::VeilButton: chooseFirstBank(); break;
+        case HitKind::Page:
+            // O hover antigo era de um disco da outra pagina: sem isto o knob
+            // recem-escondido continua com o anel de hover aceso.
+            state_.page = h.index;
+            state_.hoverKnob = -1;
+            needDraw_ = true;
+            break;
         case HitKind::Browse: requestDialog("file"); break;
         case HitKind::AddFolder: requestDialog("dir"); break;
         case HitKind::Remove: removeCurrent(); break;
@@ -561,6 +570,13 @@ std::vector<unsigned> ForgeUi::utf8DecodeChars(const std::string& s) {
 
 void ForgeUi::writePort(uint32_t port, float value) {
     if (write_) write_(controller_, port, sizeof(float), 0, &value);
+    // Um host que nao devolve port_event deixaria o chip do rodape parado no
+    // default enquanto o disco do MOTOR anda. O chip e leitura do MESMO numero,
+    // entao ele aprende o valor aqui tambem -- noteHiddenValue ja ignora repeticao.
+    if (port >= kPortParamBase && port < kPortParamBase + uint32_t(pianoforge::Param_Count)) {
+        const int pid = int(port - kPortParamBase);
+        if (!pianoforge::kParameterDefs[pid].isVisible) noteHiddenValue(pid, value);
+    }
 }
 
 void ForgeUi::notify(const std::string& msg) {

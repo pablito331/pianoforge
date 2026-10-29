@@ -91,6 +91,11 @@ const GroupDef kGroups[5] = {
     {"ESPAÇO",       {Param_Chorus, Param_Reverb},                          2, false},
 };
 
+// A sexta chapa, a da pagina MOTOR: os sete parametros que o §3 deixava de fora
+// e que ate aqui eram so chip no rodape. Ela nao divide a area com as outras
+// cinco -- ocupada inteira, numa pagina propria.
+const GroupDef kMotorGroup = {"MOTOR", {Param_ReverbType}, 0, true};
+
 std::string formatSize(uint64_t bytes) {
     char buf[48];
     const double gb = double(bytes) / (1024.0 * 1024.0 * 1024.0);
@@ -291,6 +296,52 @@ Layout layoutFor(int w, int h, int artH) {
         }
     }
 
+    // Abas do cabecalho. A altura e a do .model-chip (18) e o x comeca depois do
+    // LED e do vao dele: e o mesmo lugar onde o prototipo poe o rotulo unico
+    // "CONTROLES DE TIMBRE", que agora tem duas areas para nomear.
+    constexpr int kTabW = 62, kTabH = 18, kTabGap = 4;
+    const int tabX = l.head.x + 13 + 14;
+    const int tabY = l.head.cy() - kTabH / 2;
+    l.tabTimbre = Rect{tabX, tabY, kTabW, kTabH};
+    l.tabMotor = Rect{tabX + kTabW + kTabGap, tabY, kTabW, kTabH};
+
+    // Pagina MOTOR: uma chapa so, com os sete discos numa grade 4x2 (7 = 4 + 3).
+    // A area e mais larga que alta, e o disco do prototipo e 78 px: em duas
+    // fileiras de quatro ele nao encolhe nem com o painel a 700 px de largura.
+    l.engineCard = Rect{innerX, innerY, innerW, innerH};
+    l.engineHead = Rect{innerX + 1, innerY + 1, innerW - 2, kGroupHeadH};
+    {
+        constexpr int kCols = 4, kRows = 2;
+        const int areaY = l.engineCard.y + 1 + kGroupHeadH + 1;
+        const int areaH = std::max(20, l.engineCard.y + l.engineCard.h - 2 - areaY);
+        const int areaWd = l.engineCard.w - 2 - 2 * 3;
+        const int cellW = (areaWd - (kCols - 1) * 2) / kCols;
+        const int cellH = (areaH - (kRows - 1) * 2) / kRows;
+        int total = 0;
+        for (int pid = 0; pid < kKnobCount; ++pid)
+            if (!kParameterDefs[pid].isVisible) ++total;
+        int slot = 0;
+        for (int pid = 0; pid < kKnobCount; ++pid) {
+            if (kParameterDefs[pid].isVisible) continue;   // os dez sao do TIMBRE
+            const int r = slot / kCols, c = slot % kCols;
+            // Sete discos em quatro colunas deixam a ultima fileira com tres. Ela
+            // e CENTRADA em vez de encostada a esquerda: tres discos alinhados
+            // com as tres primeiras colunas leem como falta um, nao como linha
+            // proposital.
+            const int rowCount = std::min(kCols, total - r * kCols);
+            const int rowOffset = (kCols - rowCount) * (cellW + 2) / 2;
+            const int cellX = l.engineCard.x + 1 + 3 + rowOffset + c * (cellW + 2);
+            const int cellY = areaY + r * (cellH + 2);
+            const int box = std::max(30, std::min({kKnobBox, cellW - 2, cellH - 26}));
+            l.knobBox[pid] = Rect{cellX + (cellW - box) / 2, cellY + (cellH - 26 - box) / 2,
+                                 box, box};
+            l.knobCx[pid] = l.knobBox[pid].cx();
+            l.knobCy[pid] = l.knobBox[pid].cy();
+            l.knobU[pid] = float(box) / 80.0f;
+            ++slot;
+        }
+    }
+
     // Rodape: identidade | estado (com o preset) | chips informativos. As
     // medidas sao as do CSS (.statusbar grid 1.05fr 1fr 1.7fr, gap 12, pad 12) e
     // sao RECALKULADAS em drawStatusBlock -- aqui só interessa a geometria que o
@@ -385,7 +436,17 @@ bool veilVisible(const PanelState& s) {
     return s.haveStatus ? (s.published < 0) : (s.current < 0);
 }
 
+int pageDoKnob(int paramId) {
+    if (paramId < 0 || paramId >= kKnobCount) return 0;
+    return kParameterDefs[paramId].isVisible ? 0 : 1;
+}
+
 Hit hitTest(const Layout& l, const PanelState& s, int x, int y) {
+    // As abas VEM PRIMEIRO: elas sao a unica saida do veil, e um host que abre
+    // sem banco precisa poder chegar ao MOTOR (afinar o motor com a forja fria e
+    // trabalho legitimo) sem tocar em "Escolher primeiro banco".
+    if (l.tabTimbre.contains(x, y)) return {HitKind::Page, 0};
+    if (l.tabMotor.contains(x, y)) return {HitKind::Page, 1};
     if (l.btnBrowse.contains(x, y)) return {HitKind::Browse, -1};
     if (l.btnFolder.contains(x, y)) return {HitKind::AddFolder, -1};
     if (l.btnRemove.contains(x, y)) return {HitKind::Remove, -1};
@@ -402,7 +463,7 @@ Hit hitTest(const Layout& l, const PanelState& s, int x, int y) {
             return {HitKind::BankRow, vis[size_t(row + s.scroll)]};
         return {};
     }
-    if (veilVisible(s)) {
+    if (s.page == 0 && veilVisible(s)) {
         if (l.veilButton.contains(x, y)) return {HitKind::VeilButton, -1};
         return {};
     }
@@ -413,6 +474,7 @@ Hit hitTest(const Layout& l, const PanelState& s, int x, int y) {
     }
     for (int k = 0; k < kKnobCount; ++k) {
         if (l.knobBox[k].w <= 0) continue;
+        if (pageDoKnob(k) != s.page) continue;   // cada pagina so aceita os seus
         if (l.knobBox[k].contains(x, y)) return {HitKind::Knob, k};
     }
     return {};
@@ -450,6 +512,18 @@ void drawGroupCard(Surface& s, const Font& title, const Font& idx, const Rect& c
     idx.draw(s, tx, head.cy() + 3, num, forge::indexTx);
     tx += nw + 7;
     drawTracked(s, title, tx, head.cy() + 3, def.title, 1.3f, forge::groupTx);
+}
+
+// As abas do cabecalho. A ativa leva o filete de brasa embaixo -- o mesmo sinal dos
+// grupos "acesos" -- e a inativa fica ferro. O hover clareia o texto: como a aba
+// nao tem a moldura de .ui-button, essa e a unica pista de que o rotulo e botao.
+void drawTab(Surface& s, const Font& f, const Rect& r, const char* text, bool active,
+             bool hover) {
+    s.rrect(r.x, r.y, r.w, r.h, 3, active ? forge::groupHi : forge::groupLo);
+    s.rrectStroke(r.x, r.y, r.w, r.h, 3, 1, active ? forge::line3 : forge::line7);
+    if (active) s.fillRect(r.x + 3, r.y + r.h - 2, r.w - 6, 1, forge::ember);
+    f.drawCentered(s, r.cx(), r.cy() + 3, text,
+                   active ? forge::btnTxHi : (hover ? forge::ember2 : forge::muted));
 }
 
 void drawKnob(Surface& s, const Fonts& f, const Layout& l,
@@ -790,10 +864,15 @@ void drawStatusBlock(Surface& s, const Fonts& f, const Layout& l, const PanelSta
         f.small.draw(s, l.presetPrev.x + l.presetPrev.w + 4, pb.cy() + 4, buf, 0xFFC5CCD4u);
     }
 
-    // Bloco 3: os sete parametros que nao viram controle, em chips mono.
+    // Bloco 3: os sete parametros do motor, em chips mono. Sao LEITURA do mesmo
+    // numero que a pagina MOTOR edita -- quando o host automatiza um deles, o
+    // valor aparece aqui sem precisar trocar de aba.
     s.vline(xC - gap / 2, bar.y + 10, bar.h - 20, forge::div);
     const int hx = xC + 11;
-    drawTracked(s, f.tiny, hx, bar.y + 16, "PARÂMETROS DO PRESET · INFORMATIVOS", 0.96f,
+    // Estes sete eram o "so informativo" do prototipo. Com a pagina MOTOR eles
+    // tem controle, e o chip diz ONDE: sem isso, quem ve "reverbType Sala" no
+    // rodape continua achando que o valor nao se muda.
+    drawTracked(s, f.tiny, hx, bar.y + 16, "PARÂMETROS DO MOTOR · ABA MOTOR", 0.96f,
                 0xFF717C88u);
     int cxx = hx, cyy = bar.y + 30;
     const int lineH = 12;
@@ -913,7 +992,9 @@ void drawPanel(Surface& surf, const Fonts& f, const Layout& l, const PanelState&
     hgradRect(surf, Rect{l.head.x, l.head.y, l.head.w, l.head.h}, forge::headHi,
               forge::groupLo);
     surf.hline(l.head.x + 1, l.head.y + l.head.h, l.head.w - 2, forge::line7);
-    const bool live = !veilVisible(st);
+    // Na pagina MOTOR nao ha banco a esperar: os sete parametros valem com a
+    // forja fria, e o LED aceso diz isso.
+    const bool live = st.page == 1 || !veilVisible(st);
     const int ledX = l.head.x + 13;
     if (live) {
         surf.glow(ledX + 3, l.head.cy(), 7, forge::ember, 0.5f);
@@ -921,8 +1002,18 @@ void drawPanel(Surface& surf, const Fonts& f, const Layout& l, const PanelState&
     } else {
         surf.disc(ledX + 3, l.head.cy(), 3.0f, 0xFF515B67u);
     }
-    drawTracked(surf, f.label, ledX + 14, l.head.cy() + 3, "CONTROLES DE TIMBRE", 9 * 0.15f,
-                forge::headTx);
+    // As duas abas no lugar do rotulo unico: o prototipo tinha uma area e um
+    // rotulo; agora sao duas areas. "CONTROLES DE TIMBRE" continua ali QUANDO
+    // CABE -- o que nao pode e texto entrando por baixo dos chips ENGINE/FORJA.
+    drawTab(surf, f.label, l.tabTimbre, "TIMBRE", st.page == 0, st.hoverTab == 0);
+    drawTab(surf, f.label, l.tabMotor, "MOTOR", st.page == 1, st.hoverTab == 1);
+    {
+        const char* txt = st.page == 0 ? "CONTROLES DE TIMBRE" : "AJUSTE FINO DO MOTOR";
+        const int txtX = l.tabMotor.x + l.tabMotor.w + 12;
+        const int chipRoom = l.head.x + l.head.w - 13 - 150;   // os dois chips da direita
+        if (chipRoom - txtX >= f.label.widthSpaced(txt, 9 * 0.15f))
+            drawTracked(surf, f.label, txtX, l.head.cy() + 3, txt, 9 * 0.15f, forge::headTx);
+    }
     {
         // Os dois chips da direita: .model-chip (bronze) e .engine-chip.
         const std::string eng = st.engineChip.empty() ? "tsf" : st.engineChip;
@@ -944,14 +1035,21 @@ void drawPanel(Surface& surf, const Fonts& f, const Layout& l, const PanelState&
     surf.glow(l.control.x + int(l.control.w * 0.53f), l.control.y + int(l.control.h * 0.15f),
               std::max(40, l.control.w / 2), 0xFF242931u, 0.32f);
 
-    for (int g = 0; g < 5; ++g)
-        drawGroupCard(surf, f.sub, f.tiny, l.groupCard[g], l.groupHead[g], kGroups[g], g + 1);
+    if (st.page == 0) {
+        for (int g = 0; g < 5; ++g)
+            drawGroupCard(surf, f.sub, f.tiny, l.groupCard[g], l.groupHead[g], kGroups[g], g + 1);
+    } else {
+        // 06: a mesma numeracao das cinco chapas do TIMBRE, para a pagina do motor
+        // ler como parte do mesmo painel e nao como uma tela de outro programa.
+        drawGroupCard(surf, f.sub, f.tiny, l.engineCard, l.engineHead, kMotorGroup, 6);
+    }
     for (int k = 0; k < kKnobCount; ++k) {
         if (l.knobBox[k].w <= 0) continue;
+        if (pageDoKnob(k) != st.page) continue;
         drawKnob(surf, f, l, st, k, live, time);
     }
 
-    if (veilVisible(st)) drawVeil(surf, f, l, st);
+    if (st.page == 0 && veilVisible(st)) drawVeil(surf, f, l, st);
     drawStatusBlock(surf, f, l, st);
     drawToast(surf, f, l, st);
 }

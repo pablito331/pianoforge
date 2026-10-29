@@ -9,6 +9,7 @@
 
 #include "Font.hpp"
 #include "Surface.hpp"
+#include "../Parameters.hpp"
 
 #include <array>
 #include <cstdint>
@@ -17,7 +18,11 @@
 
 namespace pforge {
 
-constexpr int kKnobCount = 10;
+// 17 = Param_Count: os dez do TIMBRE e os sete do MOTOR numa array so, indexada
+// por ParameterId. E isso que faz arrasto, roda e duplo-clique (= default)
+// valerem para as duas paginas sem nenhum codigo novo -- muda so qual conjunto
+// de ids o hit-test aceita.
+constexpr int kKnobCount = pianoforge::Param_Count;
 
 struct KnobState {
     int port = 0;
@@ -39,8 +44,9 @@ struct BankRow {
     bool exists = true;
 };
 
-// Os sete parametros que o §3 nao expoe como controle viram chips informativos
-// no rodape ("reverbType  Sala Estudio"), como no prototipo.
+// Os sete parametros que o §3 nao expoe como controle tambem tem chip no rodape
+// ("reverbType  Sala Estudio"), como no prototipo. O chip e LEITURA: quem
+// escreve neles e a pagina MOTOR, com os mesmos knobs do TIMBRE.
 struct HiddenChip {
     std::string key;
     std::string value;
@@ -84,8 +90,10 @@ struct PanelState {
     int hoverBank = -1;        // negativo: -2..-5 sao os botoes/busca da coluna esquerda
     int hoverPreset = -1;      // 0 = "<<", 1 = ">>" (so quando o seletor aparece)
     int scroll = 0;
+    int page = 0;              // 0 = TIMBRE (as cinco chapas), 1 = MOTOR (os sete)
     std::array<KnobState, kKnobCount> knobs;
     int hoverKnob = -1;
+    int hoverTab = -1;         // 0/1: a aba sob o mouse
     int dragKnob = -1;
     float sparkAge = -1.0f;    // >=0: fagulhas vivas (tempo desde o ultimo toque)
     bool loading = false;
@@ -117,7 +125,8 @@ struct PanelState {
 };
 
 enum class HitKind {
-    None, BankRow, Browse, AddFolder, Remove, Knob, PresetDec, PresetInc, Search, VeilButton
+    None, BankRow, Browse, AddFolder, Remove, Knob, PresetDec, PresetInc, Search, VeilButton,
+    Page                       // index = a pagina pedida (0 TIMBRE, 1 MOTOR)
 };
 
 struct Hit {
@@ -141,6 +150,13 @@ struct Layout {
     std::array<int, kKnobCount> knobCx{}, knobCy{};
     std::array<float, kKnobCount> knobU{};   // escala: o SVG do prototipo e um 80x80
     Rect presetBox, presetPrev, presetNext;
+    // As duas abas do cabecalho (TIMBRE | MOTOR). Largura FIXA: o layout nao tem
+    // fonte para medir texto, e um botao cuja largura seguisse a fonte do sistema
+    // sairia do lugar num bundle sem a DejaVu.
+    Rect tabTimbre, tabMotor;
+    // A chapa unica da pagina MOTOR: ocupa a mesma area que as cinco do TIMBRE
+    // dividem entre si -- so uma das duas e desenhada por vez.
+    Rect engineCard, engineHead;
     Rect veilCard, veilButton;
     int width = 0, height = 0;
 };
@@ -173,8 +189,15 @@ int listRowCapacity(const Layout& l);
 bool presetSelectorVisible(const PanelState& s);
 
 // O veil ("A forja esta fria") cobre a area de controles enquanto nao ha piano
-// publicado -- e o estado em que o plugin abre, por decisao sua.
+// publicado -- e o estado em que o plugin abre, por decisao sua. Ele cobre a
+// pagina TIMBRE: a do MOTOR nao depende de banco nenhum e fica editavel com a
+// forja fria (afinar o motor antes de escolher o piano e trabalho legitimo).
 bool veilVisible(const PanelState& s);
+
+// Pagina de um parametro: os dez visiveis sao o TIMBRE, os outros sete o MOTOR.
+// Hit-test, desenho e a UI usam ESTA funcao -- se cada um decidisse por conta
+// propria, um disco clicavel apareceria na pagina errada.
+int pageDoKnob(int paramId);
 
 Hit hitTest(const Layout& l, const PanelState& s, int x, int y);
 

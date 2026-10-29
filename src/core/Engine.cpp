@@ -485,7 +485,13 @@ void Engine::applyNoteOn(int note, int rawVelocity) noexcept {
     float curve = params.getValue(Param_VelCurve);
     int curvedVel = dsp::VelocityCurve::process(rawVelocity, curve);
 
-    float hammerAmt = params.getValue(Param_Hammer);
+    // O martelo somava demais: 100% do knob passa a valer o que 10% valia. A
+    // escala fica AQUI, no encontro do controle com o modelo, e nao dentro do
+    // HammerModel: o modelo e o transiente medido (as tabelas de cal_ saem de
+    // irEnergy), o controle e gosto -- e gosto muda de numero sem obrigar a
+    // recalibrar tabela nenhuma.
+    constexpr float kHammerEscala = 0.10f;
+    float hammerAmt = params.getValue(Param_Hammer) * kHammerEscala;
     float hammerTone = params.getValue(Param_HammerTone);
     if (hammerAmt > 0.001f) {
         hammerModel.trigger(note, curvedVel, hammerAmt, hammerTone);

@@ -354,6 +354,13 @@ Valores reais de `src/core/Parameters.hpp`, que é o que o TTL replica:
 novo é ~3× mais fraco em RMS por unidade de ganho, então 0.05 ficou inaudível; 0.35 é
 o feltro aparecendo sem virar ruído, e o pico medido nesse valor é 0,063 (em 1.0, 0,184).
 
+> **Escala do martelo (out/2026):** o controle somava demais — em 0.35 o feltro
+disputava com a amostra. `Engine::applyNoteOn` multiplica o valor da porta por
+`kHammerEscala = 0.10`, então **100% do knob agora vale o que 10% valia**: os picos
+acima viram 0,0063 (em 0.35) e 0,0184 (em 1.0). A escala mora no encontro do controle
+com o modelo, e não dentro do `HammerModel`: as tabelas `cal_` são o transiente medido,
+o knob é gosto — e gosto muda de número sem recalibrar tabela nenhuma.
+
 O `name` é o que o **host** mostra (ali há espaço); a coluna "no painel" é
 `ParameterDef::shortName`, o rótulo debaixo do knob. Os dois existem porque
 "Ataque do Martelo" e "Ressonância das Cordas" não cabem em ~90 px: truncados em
@@ -372,9 +379,15 @@ tão desorganizados". O hover e o display de baixo usam o nome longo.
 | 15 | `sympTune` | 0 | 1 | 0.5 | afinação fina dos ressonadores |
 | 16 | `engineTune` | −100 | 100 | 0 | transposição global do engine (cents) |
 
-A UI **não** renderiza knobs para `hidden`, mas pode mostrá-los passivamente
-(tooltip "definido por: Concert Grand"). Manipulação direta de hidden fica pra um
-"painel avançado" opcional — fora da v1.
+Até out/2026 a UI **não** renderizava knobs para `hidden`: eles eram só chips de
+leitura no rodapé, e a manipulação direta ficava "pra um painel avançado opcional".
+Esse painel é a **aba MOTOR** do cabeçalho do painel: os sete viram discos numa grade
+4×2 dentro de uma chapa só (`06 MOTOR`), com o mesmo arrasto, a mesma roda e o mesmo
+duplo-clique = default dos dez do TIMBRE, escrevendo nas portas 13..19. Os chips
+continuam no rodapé como leitura (mostram o valor que a automação do host mandou) e o
+título do bloco passou a dizer onde se edita. A página MOTOR não depende de banco
+publicado: com a forja fria ela continua acesa e editável, ao contrário do véu do
+TIMBRE.
 
 > Convenção de ID: symbols estáveis e em ordem fixa no TTL. O host grava automação
 > pelo índice — **nunca reordenar ports depois do primeiro save**; pra crescer,
@@ -746,9 +759,16 @@ tinha sido ditada à mão em 5×2 e voltou a ser por categoria.
 
 Regras de UX implementadas:
 
-1. **1 knob = 1 port `knob`.** Os 7 `hidden` nunca são arrastáveis: viram os chips
-   monoespaçados da terceira coluna do rodapé (`.hidden-chip`), que é exatamente o
-   que o protótipo faz com eles.
+1. **1 knob = 1 port `knob`, em duas páginas.** Os 10 do TIMBRE escrevem nas portas
+   3..12 e os 7 do MOTOR nas 13..19: `knobs[]` é indexado por `ParameterId`, então
+   arrasto, roda e duplo-clique = default são o MESMO código nas duas páginas. Os
+   chips monoespaçados da terceira coluna do rodapé (`.hidden-chip`) ficaram como
+   leitura dos sete — o protótipo pedia texto, e texto ele continua sendo; o que
+   saiu foi o "não se edita". A troca de página são duas abas no cabeçalho, `TIMBRE`
+   e `MOTOR` (62×18, largura fixa: o layout não tem fonte para medir texto), com o
+   filete de brasa embaixo da ativa — o mesmo sinal dos grupos "acesos". As abas vêm
+   **antes** do véu no hit-test: sem elas, um host que abre sem banco deixaria o
+   motor trancado atrás do `Escolher primeiro banco`.
 2. **Quatro colunas de cards, `.78 / .88 / 1.64 / .92 fr`** — a coluna 1 empilha
    MASTER sobre RESSONÂNCIA (os dois grupos de um knob só, e por isso ela é mais
    estreita), a 3 é o CORPO em `.body-grid` 2×2. A ordem mora em `kGroups[]` e em
