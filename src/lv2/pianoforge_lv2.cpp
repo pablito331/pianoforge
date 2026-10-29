@@ -246,6 +246,13 @@ private:
         requestedIndex.store(index, std::memory_order_relaxed);
         loadInFlight.store(index != publishedBank.load(std::memory_order_relaxed),
                            std::memory_order_relaxed);
+        // A porta sai daqui ANTES de o pedido ser entregue. run() escreve o estado no
+        // COMECO do bloco, entao sem esta escrita o bloco que aceita o pedido publica
+        // o estado anterior -- e se o worker terminar antes do proximo bloco (um SF2
+        // sintetico no page cache leva microssegundos) o host pula de "nenhum piano"
+        // direto para o indice novo e nunca ve -3. Nao e corrida do teste: e meia
+        // janela de tempo em que a porta mentia sobre um pedido ja em curso.
+        writeStatusPorts();
         if (worker) {
             const WorkerMsg msg{MSG_LOAD_BANK, index};
             if (worker->schedule_work(worker->handle, sizeof(msg), &msg) != LV2_WORKER_SUCCESS) {

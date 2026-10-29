@@ -123,7 +123,7 @@ public:
     // sermos criados.
     CocoaForgeUi(NSView* parent, const std::string& bundlePath, LV2UI_Write_Function writeFn,
                  LV2UI_Controller controller)
-        : ForgeUi(bundlePath, writeFn, controller), parent_([parent retain]) {
+        : ForgeUi(bundlePath, writeFn, controller), parent_(parent) {
         // Ha bomba de eventos (o run loop): ver ForgeUi::idle()/wakeOrDraw(), que com
         // isto ligado se recusam a desenhar na thread chamadora.
         hasEventThread_ = true;
@@ -145,20 +145,17 @@ public:
             bitmapCtx_ = nullptr;
         }
         ctxBits_ = nullptr;
-        // Local __unsafe_unretained de caso: com -fobjc-arc um local __strong
-        // receberia um retain extra do proprio ARC, e o nosso [release] passaria a
-        // depender de quando cada compilador decide soltar.
-        __unsafe_unretained PFCocoaPanelView* v = view_;
-        [v removeFromSuperview];
-        [v release];
+        // Solta na ordem inversa da criacao e SEM release explicito: os tres ponteiros
+        // sao membros __strong, entao o = nil ja devolve a referencia. Era justamente
+        // isto que nao compilava -- com -fobjc-arc o compilador proibe [release], e o
+        // CI de macOS reprovou o arquivo na primeira vez que alguem o compilou num Mac.
+        [view_ removeFromSuperview];
         view_ = nil;
         if (ownedWindow_) {
-            __unsafe_unretained NSWindow* w = ownedWindow_;
+            // releasedWhenClosed = NO: fechar nao solta a janela, o = nil abaixo sim.
+            [ownedWindow_ close];
             ownedWindow_ = nil;
-            [w close];
-            [w release];
         }
-        [parent_ release];
         parent_ = nil;
     }
 
@@ -265,9 +262,9 @@ protected:
     // subview de um container que nao e a janela-chave por si so.
     //
     // Os tres blocos de baixo checam o flag de "esta vivo" ANTES de encostar na
-    // view: sem ARC um bloco nao retem o ponteiro que captura, e um dispatch feito
-    // de outra thread pouco antes do dtor chegaria na main thread com a view ja
-    // solta. Com o flag, o bloco e no-op; por isso ele precisa vir primeiro.
+    // view: o local __unsafe_unretained nao e retido pelo bloco (de proposito), e um
+    // dispatch feito de outra thread pouco antes do dtor chegaria na main thread com
+    // a view ja solta. Com o flag, o bloco e no-op; por isso ele precisa vir primeiro.
     void focusWindow() override {
         __unsafe_unretained PFCocoaPanelView* v = view_;
         auto alive = alive_;
@@ -345,7 +342,10 @@ protected:
 
 private:
     void createView() {
-        __unsafe_unretained PFCocoaPanelView* v =
+        // Local __strong (o default): o +1 do alloc fica com ele ate o fim do escopo e
+        // e transferido para o membro no view_ = v. Nao ha retain explicito aqui --
+        // com -fobjc-arc ele nem compila.
+        PFCocoaPanelView* v =
             [[PFCocoaPanelView alloc] initWithFrame:NSMakeRect(0, 0, kWinW, kWinH)];
         [v setForgeUi:this];
         v.wantsLayer = YES;                 // camada propria: o blit e contents=
@@ -353,10 +353,9 @@ private:
         // macio -- aceitavel: a alternativa seria desenhar o layout em pixels e ter
         // o mouse, que o AppKit entrega em PONTOS, apontando para outro lugar.
         v.layer.contentsScale = 1.0;
-        // O [retain] explicito e o que faz o +1 do alloc ser NOSSO nos dois modos:
-        // com -fobjc-arc o compilador solta o resultado do alloc no fim do escopo (e
-        // a view desapareceria com o painel em tela); sem ARC ele fica onde esta.
-        view_ = [v retain];
+        // O +1 do alloc fica com o membro __strong: o temporario e solto no fim do
+        // escopo e a view segue viva enquanto este objeto existir.
+        view_ = v;
         if (parent_) {
             // O container e do host; se ele mudar de tamanho queremos ser
             // redimensionados junto, porque e o setFrameSize: de baixo que chama
@@ -370,7 +369,7 @@ private:
             else
                 adoptSize(kWinW, kWinH);
         } else {
-            __unsafe_unretained NSWindow* w = [[NSWindow alloc]
+            NSWindow* w = [[NSWindow alloc]
                 initWithContentRect:NSMakeRect(0, 0, kWinW, kWinH)
                           styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                      NSWindowStyleMaskMiniaturizable |
@@ -381,7 +380,7 @@ private:
             w.title = @"PianoForge - Forja de Pianos";
             w.contentView = v;
             [w makeKeyAndOrderFront:nil];
-            ownedWindow_ = [w retain];
+            ownedWindow_ = w;
             adoptSize(kWinW, kWinH);
         }
         // Primeiro paint sincrono, a mesma regra do X11: um host que nunca chama
@@ -435,12 +434,13 @@ private:
         serviceFrame();
     }
 
-    // Ponteiros ObjC gerenciados a mao: membros __unsafe_unretained para o ARC nao
-    // tentar gerenciar estado dentro de uma classe C++ (que ele nao faz) e para o
-    // arquivo compilar tambem sem -fobjc-arc.
-    __unsafe_unretained NSView* parent_ = nil;
-    __unsafe_unretained PFCocoaPanelView* view_ = nil;
-    __unsafe_unretained NSWindow* ownedWindow_ = nil;
+    // Membros __strong: o ARC gera retain/release nas atribuicoes e solta os tres no
+    // fim do dtor, mesmo dentro de uma classe C++. O __unsafe_unretained continua
+    // valendo para os LOCAIS que entram num bloco (focusWindow e companhia): ali
+    // reter seria manter a view viva depois do dtor, que e o que alive_ evita.
+    NSView* parent_ = nil;
+    PFCocoaPanelView* view_ = nil;
+    NSWindow* ownedWindow_ = nil;
     CGContextRef bitmapCtx_ = nullptr;
     uint32_t* ctxBits_ = nullptr;
     int ctxStride_ = 0, ctxW_ = 0, ctxH_ = 0;
