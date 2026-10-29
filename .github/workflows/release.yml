@@ -147,7 +147,11 @@ jobs:
             --bad nao_existe_de_verdade.sf2
 
       - name: "B: nenhuma tecla muda com o pedal no ar"
-        run: "$EXE_pforge_dsp_stages" --makesf2 1 --pedalload --seconds 20
+        # As aspas em volta do caminho sao do shell, nao do YAML: um escalar que
+        # comeca com " tem de terminar na aspa, e o texto depois dela derruba o
+        # workflow inteiro antes de existir job. Por isso o bloco, e nao a linha.
+        run: |
+          "$EXE_pforge_dsp_stages" --makesf2 1 --pedalload --seconds 20
 
       # O teste B acima e o unico que nao depende de medida diferencial de audio, e
       # por isso o unico gate de "nota descartada". Aqui a pergunta e outra: o
@@ -186,7 +190,8 @@ jobs:
       # garante window server: e o unico backend sem prova de UI em CI.
       - name: "D2: o mesmo painel dentro de um HWND (Windows)"
         if: runner.os == 'Windows'
-        run: "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe_ui --ui
+        run: |
+          "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe_ui --ui
 
       - name: "E: preview offscreen do painel"
         run: |
@@ -198,7 +203,8 @@ jobs:
       # e a mesma do LV2: entrega um estado que aponta para um banco sintetico e
       # espera amostra nao-nula. O banco e gerado aqui, nada vem gravado.
       - name: "F: o VST3 responde a um host de verdade"
-        run: "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe
+        run: |
+          "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe
 
       # pluginval e um host de terceiro e julga o que o nosso probe nao julga
       # (thread-safety, layout de barramento, automacao sem gesto). Ele NAO e
