@@ -33,6 +33,24 @@ third_party/lv2/lv2/include/
 Dependência externa (não vendorizada)
 -------------------------------------
 
+VST3 SDK — https://github.com/steinbergmedia/vst3sdk — Steinberg Media Technologies
+GmbH, **MIT**. Desde a série 3.8 o SDK não é mais a licença dupla
+GPLv3/proprietária de antes; a própria Steinberg anuncia a mudança em
+https://www.steinberg.net/press/2025/vst-3-8/, e os três `LICENSE.txt` que
+`scripts/get_vst3sdk.sh` (ou `.ps1`) baixa — `pluginterfaces`, `base`, `public.sdk` —
+foram lidos antes de decidir, e são eles que mandam. Consequência: **`PianoForge.vst3`
+é MIT, igual a `pianoforge.lv2` e ao resto deste repositório** — nenhuma linha do
+código do SDK foi copiada para `src/`.
+
+O SDK não é vendorizado por motivo prático, não jurídico: são ~40 MB de cabeçalho e
+helper, e `third_party/vst3sdk/` é reprodutível a partir da tag fixa no script
+(`.tag` guarda a que entrou no build, e `PF_VST3=OFF` simplesmente não o compila).
+
+A ressalva vale para o futuro de quem baixar este repo e para o passado de quem usar um
+SDK **anterior a 3.8**: aquela versão estava sob GPLv3 (ou o contrato proprietário), e
+um binário compilado contra ela herda a GPLv3. Se a tag do script descer para antes de
+3.8, a licença do `.vst3` tem de ser reescrita aqui e no release do CI.
+
 sfizz — https://sfz.studio — BSD-2-Clause. Backend de SFZ/SF3, linkado quando
 encontrado (`find_library`, ou `-DSFIZZ_DIR=<prefixo>`). Os termos BSD-2-Clause
 acompanham a instalação; quem distribui um binário que liga sfizz deve incluir o
@@ -44,7 +62,8 @@ Fontes em assets/ui/
 DejaVu Sans, DejaVu Sans Bold, DejaVu Serif e DejaVu Sans Mono — licença Bitstream
 Vera, que permite redistribuição e modificação **desde que o nome original seja
 preservado** em qualquer cópia ou derivado. Os arquivos são distribuídos sem
-renomear e as quatro vão para dentro de `pianoforge.lv2/` no bundle instalado.
+renomear e as quatro vão para dentro de `pianoforge.lv2/` (e de
+`PianoForge.vst3/Contents/Resources/`) no bundle instalado.
 
 Soundfonts
 ----------

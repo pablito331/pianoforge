@@ -10,6 +10,7 @@ compile_commands.json
 
 # sfizz e outras dependências baixadas por script (nunca vendorizadas aqui)
 third_party/sfizz/
+third_party/vst3sdk/
 third_party/*/build/
 .deps/
 
@@ -22,6 +23,15 @@ packaging/fixture/out*/
 packaging/fixture/*.pforge
 !packaging/fixture/test.pforge
 !packaging/fixture/bad.pforge
+
+# área de trabalho local (toolchain portátil, builds de auditoria, capturas de
+# trabalho): nada aqui é fonte nem entra em pacote
+_tmp/
+
+# capturas de trabalho na raiz; o PNG que vale é docs/images/pianoforge-painel.png
+/painel*.png
+/*_status.png
+/*.ppm_*
 
 # som e bancos de trabalho do usuário — o repo não distribui soundfont
 *.sf2

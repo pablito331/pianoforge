@@ -13,6 +13,17 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# ---- runtime do MinGW -----------------------------------------------------
+# O plugin do Windows viaja como DLL solta dentro de um bundle que e copiado por
+# pasta, e a maquina de quem usa nao tem o MinGW. Sem runtime estatico, pianoforge.dll
+# importa libstdc++-6.dll, libgcc_s_seh-1.dll e libwinpthread-1.dll: o host chama
+# LoadLibrary, a dependencia nao esta la e o erro aparece longe do build ("modulo nao
+# encontrado"), sem nenhuma pista do que falta. O -static cobre os tres. O MSVC ja
+# linka o CRT assim (as api-ms-win-crt-* sao do proprio Windows).
+if(MINGW)
+    add_link_options(-static)
+endif()
+
 # O sufixo que um host LV2 espera em cada sistema, uma unica vez: vale para o
 # plugin, para a UI e para o nome que sai escrito no manifest gerado.
 if(WIN32)
@@ -208,17 +219,242 @@ if(PFORGE_UI_OK)
     )
 endif()
 
+# As quatro DejaVu viajam no bundle dos DOIS formatos: a UI resolve a fonte pelo
+# bundle_path que recebe, e o caminho relativo "assets/ui" nao existe dentro de um
+# host instalado (o cwd do DAW e outro). Um host que copie so o binario cai nos
+# diretorios de fonte do sistema, em ForgeUi::loadFonts.
+set(PFORGE_UI_FONTS
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSans.ttf
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSans-Bold.ttf
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSerif.ttf
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSansMono.ttf
+)
+
+# ---- VST3 ----------------------------------------------------------------
+# O mesmo motor e o mesmo painel, num shell diferente. A UI nao e duplicada: o
+# backend de janela do sistema entra neste modulo tambem, e as duas entradas
+# (lv2ui_descriptor e pfui::createUi) convivem no mesmo objeto -- cada formato
+# chama a que conhece.
+#
+# O SDK nao e vendorizado (sao tres repositorios e ~40 MB de fonte):
+# scripts/get_vst3sdk.ps1|sh busca a tag fixa em third_party/vst3sdk. Sem ele o
+# build segue com LV2 + standalone, e por isso o teste e EXISTS no .tag e nao uma
+# option ligada por padrao: quem clonou o repo nao deve ver um erro vermelho.
+set(PFORGE_VST3_SDK ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vst3sdk)
+option(PF_VST3 "Shell VST3 (precisa de third_party/vst3sdk)" ON)
+
+if(PF_VST3 AND EXISTS ${PFORGE_VST3_SDK}/.tag AND PFORGE_UI_OK)
+    # ${arch}-<so> e o nome que o host espera dentro de Contents/; no macOS o
+    # diretorio e MacOS, sem arquitetura, porque o binario pode ser universal.
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        set(_pf_cpu "aarch64")
+    else()
+        set(_pf_cpu "x86_64")
+    endif()
+    if(WIN32)
+        # Windows nao tem VST3 de 32 bits no ecossistema atual (o SDK 3.8 tambem
+        # nao): o diretorio e o mesmo, e um build de 32 bits e um engano de config.
+        set(PFORGE_VST3_ARCH_DIR "x86_64-win")
+    elseif(APPLE)
+        set(PFORGE_VST3_ARCH_DIR "MacOS")
+    else()
+        set(PFORGE_VST3_ARCH_DIR "${_pf_cpu}-linux")
+    endif()
+
+    # Fonte do SDK, item por item. Nao e "tudo que termina em .cpp": vstgui (que
+    # so existe em public.sdk/samples), vstpresetfile e vstrepresentation puxam
+    # dependencias que este plugin nao usa, e o que nao entra aqui nao linka.
+    set(PFORGE_VST3_SDK_SOURCES
+        ${PFORGE_VST3_SDK}/pluginterfaces/base/conststringtable.cpp
+        ${PFORGE_VST3_SDK}/pluginterfaces/base/coreiids.cpp
+        ${PFORGE_VST3_SDK}/pluginterfaces/base/funknown.cpp
+        ${PFORGE_VST3_SDK}/pluginterfaces/base/ustring.cpp
+        ${PFORGE_VST3_SDK}/base/source/baseiids.cpp
+        ${PFORGE_VST3_SDK}/base/source/fbuffer.cpp
+        ${PFORGE_VST3_SDK}/base/source/fdebug.cpp
+        ${PFORGE_VST3_SDK}/base/source/fdynlib.cpp
+        ${PFORGE_VST3_SDK}/base/source/fobject.cpp
+        ${PFORGE_VST3_SDK}/base/source/fstreamer.cpp
+        ${PFORGE_VST3_SDK}/base/source/fstring.cpp
+        ${PFORGE_VST3_SDK}/base/source/timer.cpp
+        ${PFORGE_VST3_SDK}/base/source/updatehandler.cpp
+        # FLock (usado por fobject/updatehandler) mora em base/thread, que e um
+        # repositorio separado no SDK e nao entra por "base/source".
+        ${PFORGE_VST3_SDK}/base/thread/source/fcondition.cpp
+        ${PFORGE_VST3_SDK}/base/thread/source/flock.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/common/commoniids.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/common/commonstringconvert.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/common/memorystream.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/common/pluginview.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/main/moduleinit.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/main/pluginfactory.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstaudioeffect.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstbus.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstcomponent.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstcomponentbase.cpp
+        # vsteditcontroller.cpp NAO entra na lista, de proposito:
+        # vstsinglecomponenteffect.cpp ja o inclui (com os #define que separam
+        # IComponent::setState de IEditController::setEditorState). Compilar os
+        # dois da "multiple definition" de meia duzia de simbolos do EditController.
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstinitiids.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstparameters.cpp
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
+    )
+
+    # A entrada de modulo e uma por sistema: DllMain no Windows, bundleEntry no
+    # Linux, macmain no macOS. Todas preenchem o caminho do bundle, que e de onde
+    # o shell acha o Contents/Resources.
+    if(WIN32)
+        list(APPEND PFORGE_VST3_SDK_SOURCES ${PFORGE_VST3_SDK}/public.sdk/source/main/dllmain.cpp)
+        set(PFORGE_VST3_SUFFIX ".vst3")
+    elseif(APPLE)
+        list(APPEND PFORGE_VST3_SDK_SOURCES ${PFORGE_VST3_SDK}/public.sdk/source/main/macmain.cpp)
+        set(PFORGE_VST3_SUFFIX "")     # Contents/MacOS/PianoForge, sem extensao
+    else()
+        list(APPEND PFORGE_VST3_SDK_SOURCES ${PFORGE_VST3_SDK}/public.sdk/source/main/linuxmain.cpp)
+        set(PFORGE_VST3_SUFFIX ".vst3")
+    endif()
+
+    if(WIN32)
+        set(PFORGE_UI_BACKEND_SRC src/ui/backend_win32.cpp)
+    elseif(APPLE)
+        set(PFORGE_UI_BACKEND_SRC src/ui/backend_cocoa.mm)
+    else()
+        set(PFORGE_UI_BACKEND_SRC src/ui/backend_x11.cpp)
+    endif()
+
+    add_library(pianoforge_vst3 MODULE
+        src/vst3/Entry.cpp
+        src/vst3/PianoForgeVst3.cpp
+        ${PFORGE_VST3_SDK_SOURCES}
+        ${PFORGE_UI_BACKEND_SRC}
+    )
+    set_target_properties(pianoforge_vst3 PROPERTIES
+        OUTPUT_NAME "PianoForge"
+        PREFIX ""
+        SUFFIX "${PFORGE_VST3_SUFFIX}"
+    )
+    target_include_directories(pianoforge_vst3 PRIVATE
+        ${PFORGE_VST3_SDK}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    # A versao do binario sai do project(), como no manifest do LV2: o host mostra
+    # este numero no gerenciador de plugins, e um literal morto aqui divergiria do
+    # zip do release.
+    target_compile_definitions(pianoforge_vst3 PRIVATE PFORGE_VST3_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(pianoforge_vst3 PRIVATE pforge_core pforge_ui_ctrl Threads::Threads)
+
+    if(WIN32)
+        # As mesmas do backend: shell32 e o SHBrowseForFolderW do "Adicionar pasta".
+        target_link_libraries(pianoforge_vst3 PRIVATE user32 gdi32 comdlg32 ole32 shlwapi shell32)
+    elseif(APPLE)
+        target_compile_options(pianoforge_vst3 PRIVATE -fobjc-arc)
+        target_link_libraries(pianoforge_vst3 PRIVATE "-framework Cocoa" "-framework CoreGraphics")
+    else()
+        target_include_directories(pianoforge_vst3 PRIVATE ${X11_INCLUDE_DIR})
+        target_link_libraries(pianoforge_vst3 PRIVATE ${X11_LIBRARIES} ${X11_Xext_LIB}
+                                                        ${CMAKE_DL_LIBS})
+    endif()
+
+    # RPATH da sfizz, pelo mesmo motivo do LV2: um caminho de build/ absoluto faz o
+    # plugin abrir mudo em qualquer outra maquina.
+    if(PF_HAVE_SFIZZ)
+        set_target_properties(pianoforge_vst3 PROPERTIES
+            BUILD_RPATH "${PFORGE_ORIGIN_RPATH}"
+            INSTALL_RPATH "${PFORGE_ORIGIN_RPATH}")
+    endif()
+
+    # Bundle: PianoForge.vst3/Contents/<arch>/PianoForge.vst3 + Resources. A
+    # montagem e no build/ e nao em dist/: o release empacota a pasta, e um host
+    # apontado para build/vst3 ja encontra o plugin montado.
+    set(PFORGE_VST3_BUNDLE ${CMAKE_BINARY_DIR}/vst3/PianoForge.vst3)
+    set(PFORGE_VST3_BIN_DIR ${PFORGE_VST3_BUNDLE}/Contents/${PFORGE_VST3_ARCH_DIR})
+
+    if(APPLE)
+        # O macOS nao carrega um .vst3 sem Info.plist: e o plist que diz o
+        # CFBundleExecutable a procurar dentro de Contents/MacOS.
+        file(WRITE ${PFORGE_VST3_BUNDLE}/Contents/Info.plist
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+"<plist version=\"1.0\">\n"
+"<dict>\n"
+"  <key>CFBundleExecutable</key><string>PianoForge</string>\n"
+"  <key>CFBundleIdentifier</key><string>audio.pianoforge.vst3</string>\n"
+"  <key>CFBundleName</key><string>PianoForge</string>\n"
+"  <key>CFBundleDisplayName</key><string>PianoForge</string>\n"
+"  <key>CFBundlePackageType</key><string>BNDL</string>\n"
+"  <key>CFBundleSignature</key><string>PFRG</string>\n"
+"  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n"
+"  <key>CFBundleShortVersionString</key><string>${PROJECT_VERSION}</string>\n"
+"  <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>\n"
+"  <key>NSHighResolutionCapable</key><true/>\n"
+"  <key>NSPrincipalClass</key><string>NSApplication</string>\n"
+"</dict>\n"
+"</plist>\n")
+    endif()
+
+    add_custom_command(TARGET pianoforge_vst3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${PFORGE_VST3_BIN_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:pianoforge_vst3> ${PFORGE_VST3_BIN_DIR}/
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${PFORGE_VST3_BUNDLE}/Contents/Resources
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PFORGE_UI_FONTS}
+            ${PFORGE_VST3_BUNDLE}/Contents/Resources/
+    )
+
+    if(PF_HAVE_SFIZZ)
+        foreach(_sfizz_lib IN LISTS PFORGE_SFIZZ_LIBS)
+            add_custom_command(TARGET pianoforge_vst3 POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_sfizz_lib}
+                    ${PFORGE_VST3_BIN_DIR}/
+            )
+        endforeach()
+    endif()
+
+    # Host VST3 minimo: carrega o bundle pelo mesmo caminho de um DAW
+    # (GetPluginFactory -> createInstance -> initialize) e prova audio, estado e
+    # painel. Sem ele o "build passou" so diz que compilou.
+    add_executable(pforge_vst3_probe tools/vst3_probe.cpp
+        # Os IID (IComponent::iid e companhia) sao simbolos de verdade, nao
+        # constantes de cabecalho: sem este .cpp o probe linka e morre no
+        # queryInterface em tempo de execucao -- ou nem linka.
+        ${PFORGE_VST3_SDK}/public.sdk/source/vst/vstinitiids.cpp
+    )
+    target_include_directories(pforge_vst3_probe PRIVATE
+        ${PFORGE_VST3_SDK}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    )
+    target_link_libraries(pforge_vst3_probe PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    if(WIN32)
+        target_link_libraries(pforge_vst3_probe PRIVATE user32 gdi32)
+    endif()
+    add_dependencies(pforge_vst3_probe pianoforge_vst3)
+elseif(PF_VST3 AND NOT EXISTS ${PFORGE_VST3_SDK}/.tag)
+    message(STATUS "VST3 SDK ausente: build so com LV2 + standalone. "
+                   "scripts/get_vst3sdk.ps1 (Windows) ou scripts/get_vst3sdk.sh (Unix) busca.")
+endif()
+
 # ---- manifest.ttl --------------------------------------------------------
 # Sufixo e classe de UI sao por sistema, entao o manifest nao pode ser um arquivo
 # morto no repo. O tipo da UI e o que o host usa para decidir o handle que manda
 # na create(): HWND no Win32, Window no X11, NSView* no Cocoa. Uma UI descrita
 # como X11UI num host Windows e aberta com o handle errado, ou ignorada.
 set(PFORGE_BINARY "pianoforge${PFORGE_LIB_SUFFIX}")
+# Versao do binario sai do project(), nao de um numero escrito no TTL: o release.yml
+# batiza o artefato com o tag, e um 1.0.0 morto na doc daria um zip "v1.0.1" com um
+# manifest dizendo o contrario. O host ve minor/micro e decide se o estado salvo dele
+# ainda vale; mudanca maior pede URI nova, nao um numero aqui.
+set(PFORGE_MINOR ${PROJECT_VERSION_MINOR})
+set(PFORGE_MICRO ${PROJECT_VERSION_PATCH})
 set(PFORGE_UI_BLOCK "")
 set(PFORGE_UI_REF "")
 if(PFORGE_UI_OK)
     if(WIN32)
-        set(PFORGE_UI_TYPE "ui:WinUI")
+        # ui:WindowsUI, como em lv2/ui/ui.h (LV2_UI__WindowsUI). Um "ui:WinUI"
+        # aqui e uma classe que nao existe: o host procura WindowsUI, nao acha, e
+        # o plugin toca sem painel.
+        set(PFORGE_UI_TYPE "ui:WindowsUI")
     elseif(APPLE)
         set(PFORGE_UI_TYPE "ui:CocoaUI")
     else()
@@ -239,10 +475,16 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/lv2/manifest.ttl.in
                ${CMAKE_BINARY_DIR}/pianoforge.lv2/manifest.ttl @ONLY)
 
 # Post-build: Assemble LV2 bundle folder
+#
+# O destino e ${CMAKE_BINARY_DIR}/pianoforge.lv2, NAO $<TARGET_FILE_DIR:...>: com o
+# gerador do Visual Studio (multi-config) o binario cai em build/Release/ e o copy
+# mandava o plugin para build/Release/pianoforge.lv2 enquanto manifest, UI e fontes
+# iam para build/pianoforge.lv2 -- dois bundles e nenhum completo. Em Ninja/Make as
+# duas rotas coincidem, entao o defeito so aparecia no MSVC.
 add_custom_command(TARGET pianoforge_lv2 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:pianoforge_lv2>/pianoforge.lv2
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pianoforge_lv2> $<TARGET_FILE_DIR:pianoforge_lv2>/pianoforge.lv2/
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/src/lv2/pianoforge.ttl $<TARGET_FILE_DIR:pianoforge_lv2>/pianoforge.lv2/
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/pianoforge.lv2
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pianoforge_lv2> ${CMAKE_BINARY_DIR}/pianoforge.lv2/
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/src/lv2/pianoforge.ttl ${CMAKE_BINARY_DIR}/pianoforge.lv2/
 )
 
 # O libsfizz.so do sistema de quem buildou nao acompanha o bundle por default, e
@@ -250,7 +492,7 @@ add_custom_command(TARGET pianoforge_lv2 POST_BUILD
 # encontrada; na CI (sem sfizz) o bundle sai sem nada e o SF2 segue inteiro.
 foreach(_sfizz_lib IN LISTS PFORGE_SFIZZ_LIBS)
     add_custom_command(TARGET pianoforge_lv2 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_sfizz_lib} $<TARGET_FILE_DIR:pianoforge_lv2>/pianoforge.lv2/
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_sfizz_lib} ${CMAKE_BINARY_DIR}/pianoforge.lv2/
     )
 endforeach()
 
@@ -261,14 +503,10 @@ if(PFORGE_UI_OK)
     add_custom_command(TARGET pianoforge_ui POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/pianoforge.lv2
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pianoforge_ui> ${CMAKE_BINARY_DIR}/pianoforge.lv2/
-        # As quatro DejaVu sao do bundle: a UI resolve o caminho pelo bundle_path
-        # que recebe, e um host que instale so o .so cai nos diretorios de fonte do
-        # sistema (ForgeUi::loadFonts).
+        # As DejaVu estao em PFORGE_UI_FONTS, junto da secao de UI: o bundle do
+        # VST3 copia a mesma lista, e duas listas divergiriam.
         COMMAND ${CMAKE_COMMAND} -E copy
-            ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSans.ttf
-            ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSans-Bold.ttf
-            ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSerif.ttf
-            ${CMAKE_CURRENT_SOURCE_DIR}/assets/ui/DejaVuSansMono.ttf
+            ${PFORGE_UI_FONTS}
             ${CMAKE_BINARY_DIR}/pianoforge.lv2/
     )
 endif()

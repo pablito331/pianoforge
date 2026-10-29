@@ -182,6 +182,17 @@ void ForgeUi::tick() {
             needDraw_ = true;                 // o .toast do CSS vive ~2 s
         }
     }
+    // Gancho de formato sem idle (VST3): automacao e estado do banco so entram no
+    // painel por aqui. 6 Hz e o compromisso: mais que isso acorda a thread do host
+    // sem que o olho veja, menos deixa um knob automatizado atrasado de forma
+    // visivel. O callback roda com mtx_ tomado e pode chamar portEvent (recursiva).
+    if (onHostPoll) {
+        const auto now = Clock::now();
+        if (elapsed(now - pollClock_) >= 0.15) {
+            pollClock_ = now;
+            onHostPoll();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -74,6 +75,18 @@ public:
 
     // Um frame, se algo mudou. E o que a thread de eventos chama antes de dormir.
     void serviceFrame();
+    // Estado novo que chegou por fora (port_event): marcar frame pendente e dar o
+    // empurrao que o backend souber dar. Sem thread propria o empurrao e invalidar
+    // a janela; com thread, e acordar o laco.
+    virtual void nudge() {
+        needDraw_ = true;
+        requestRedraw();
+    }
+    // Gancho para formato de plugin SEM idleInterface: o VST3 nao tem a chamada
+    // periodica do LV2 (ui:idleInterface), entao automacao do host e estado do
+    // banco nao tem por onde entrar no painel. Quem tem o que empurrar instala
+    // aqui, e tick() chama ~6x por segundo, na thread da UI.
+    std::function<void()> onHostPoll;
     // true quando ha animacao viva (fagulhas, brasa de load, toast): a camada usa
     // isso para escolher o intervalo do proximo frame.
     bool animating();
@@ -184,6 +197,9 @@ private:
     bool hiddenLive_[7] = {false, false, false, false, false, false, false};
     Clock::time_point toastClock_ = Clock::now();
     Clock::time_point touchClock_ = Clock::now();
+    // Ultimo chute no onHostPoll. E por TEMPO, e nao por frame: um laco a 60 Hz nao
+    // deve perguntar ao plugin sessenta vezes por segundo se a automacao mudou.
+    Clock::time_point pollClock_ = Clock::now();
     // Momento do ultimo clique, em segundos de `onPress`. E o backend que traz o
     // relogio (X usa timestamp do evento, Win32 GetDoubleClickTime nao serve ao
     // ajuste fino), por isso e um double e nao um time_point.

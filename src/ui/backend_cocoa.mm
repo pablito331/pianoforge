@@ -31,6 +31,7 @@
 #include "ForgeUi.hpp"
 
 #include "ForgeTheme.hpp"
+#include "UiFactory.hpp"
 
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -451,6 +452,27 @@ private:
 
 }  // namespace pfui
 
+// ---- fabrica host-agnostica (UiFactory.hpp) ----------------------------
+// Mesmo contrato dos backends Win32 e X11: o LV2 e o VST3 criam o painel aqui.
+
+namespace pfui {
+
+ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
+                  LV2UI_Controller controller, void** widgetOut) {
+    auto* ui = new CocoaForgeUi((__bridge NSView*)parent, bundlePath ? bundlePath : "", write,
+                                controller);
+    if (!ui->widget()) {
+        delete ui;
+        return nullptr;
+    }
+    if (widgetOut) *widgetOut = ui->widget();
+    return ui;
+}
+
+void destroyUi(ForgeUi* ui) { delete static_cast<CocoaForgeUi*>(ui); }
+
+}  // namespace pfui
+
 // ---- implementacao da view (aqui CocoaForgeUi ja e tipo completo) --------
 
 @implementation PFCocoaPanelView
@@ -583,17 +605,19 @@ LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
     }
 
     @autoreleasepool {
-        auto* ui = new pfui::CocoaForgeUi(parent, bundlePath ? bundlePath : "", writeFunction,
-                                          controller);
-        *widget = (LV2UI_Widget)ui->widget();
+        void* native = nullptr;
+        pfui::ForgeUi* ui = pfui::createUi((__bridge void*)parent, bundlePath, writeFunction,
+                                          controller, &native);
+        if (!ui) return nullptr;
+        *widget = (LV2UI_Widget)native;
         if (resize && resize->ui_resize)
-            resize->ui_resize(resize->handle, pfui::CocoaForgeUi::preferredWidth(),
-                              pfui::CocoaForgeUi::preferredHeight());
+            resize->ui_resize(resize->handle, pfui::ForgeUi::preferredWidth(),
+                              pfui::ForgeUi::preferredHeight());
         return ui;
     }
 }
 
-void uiCleanup(LV2UI_Handle handle) { delete uiFromHandle(handle); }
+void uiCleanup(LV2UI_Handle handle) { pfui::destroyUi(uiFromHandle(handle)); }
 
 // A assinatura do typedef e (handle, port_index, BUFFER_SIZE, FORMAT, buffer)
 // -- third_party/lv2/lv2/include/lv2/ui/ui.h:200. Trocar buffer_size por format

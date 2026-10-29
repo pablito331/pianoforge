@@ -16,6 +16,7 @@
 #include "ForgeUi.hpp"
 
 #include "ForgeTheme.hpp"
+#include "UiFactory.hpp"
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -652,6 +653,46 @@ private:
     int repairTries_ = 0;
 };
 
+} // namespace      -- fechado so para o pfui abaixo ser o GLOBAL:
+                   // um `namespace pfui` dentro do anonimo viraria
+                   // <anon>::pfui e nao casaria com a declaracao de UiFactory.hpp.
+
+// ---- fabrica host-agnostica (UiFactory.hpp) ----------------------------
+// Mesmo contrato do backend Win32: e por aqui que o LV2 e o VST3 criam o painel.
+
+namespace pfui {
+
+ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
+                  LV2UI_Controller controller, void** widgetOut) {
+    if (!hasFileDialogHelper())
+        std::fprintf(stderr, "[PianoForge UI] nem zenity nem qarma no PATH: os botoes "
+                             "Procurar/+ Pasta vao avisar, e o registro se editando "
+                             "~/.config/pianoforge/soundfonts.list\n");
+    Display* dpy = XOpenDisplay(nullptr);
+    if (!dpy) {
+        std::fprintf(stderr, "[PianoForge UI] XOpenDisplay falhou (DISPLAY='%s'): "
+                             "nenhuma janela sera criada\n",
+                     std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(unset)");
+        return nullptr;
+    }
+
+    auto* ui = new X11ForgeUi(dpy, static_cast<Window>(reinterpret_cast<uintptr_t>(parent)),
+                              bundlePath ? bundlePath : "", write, controller);
+    if (!ui->window()) {
+        delete ui;
+        return nullptr;
+    }
+    if (widgetOut)
+        *widgetOut = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ui->window()));
+    return ui;
+}
+
+void destroyUi(ForgeUi* ui) { delete static_cast<X11ForgeUi*>(ui); }
+
+} // namespace pfui
+
+namespace {
+
 // ---- LV2 UI descriptor -------------------------------------------------
 
 X11ForgeUi* uiFromHandle(LV2UI_Handle handle) {
@@ -665,18 +706,6 @@ LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
                            LV2UI_Controller controller,
                            LV2UI_Widget* widget,
                            const LV2_Feature* const* features) {
-    if (!hasFileDialogHelper())
-        std::fprintf(stderr, "[PianoForge UI] nem zenity nem qarma no PATH: os botoes "
-                             "Procurar/+ Pasta vao avisar, e o registro se editando "
-                             "~/.config/pianoforge/soundfonts.list\n");
-    Display* dpy = XOpenDisplay(nullptr);
-    if (!dpy) {
-        std::fprintf(stderr, "[PianoForge UI] XOpenDisplay falhou (DISPLAY='%s'): "
-                             "nenhuma janela sera criada\n",
-                     std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(unset)");
-        return nullptr;
-    }
-
     Window parent = 0;
     const LV2UI_Resize* resize = nullptr;
     for (int i = 0; features && features[i]; ++i) {
@@ -687,19 +716,22 @@ LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
         }
     }
 
-    auto* ui = new X11ForgeUi(dpy, parent, bundlePath ? bundlePath : "",
-                              writeFunction, controller);
-    *widget = reinterpret_cast<LV2UI_Widget>(ui->window());
+    void* native = nullptr;
+    pfui::ForgeUi* ui = pfui::createUi(
+        reinterpret_cast<void*>(static_cast<uintptr_t>(parent)), bundlePath, writeFunction,
+        controller, &native);
+    if (!ui) return nullptr;
+    *widget = reinterpret_cast<LV2UI_Widget>(reinterpret_cast<uintptr_t>(native));
     // Sem pedir o tamanho, um host que hospeda a UI dentro de uma aba/flex nao tem
     // como saber 1000x520 e deixa o container no tamanho dele: a janela filha fica
     // menor do que o painel e o que se ve e um canto preto.
     if (resize && resize->ui_resize)
-        resize->ui_resize(resize->handle, X11ForgeUi::preferredWidth(),
-                          X11ForgeUi::preferredHeight());
+        resize->ui_resize(resize->handle, pfui::ForgeUi::preferredWidth(),
+                          pfui::ForgeUi::preferredHeight());
     return ui;
 }
 
-void uiCleanup(LV2UI_Handle handle) { delete uiFromHandle(handle); }
+void uiCleanup(LV2UI_Handle handle) { pfui::destroyUi(uiFromHandle(handle)); }
 
 // A assinatura oficial do typedef e (handle, index, BUFFER_SIZE, format, buffer)
 // -- third_party/lv2/lv2/include/lv2/ui/ui.h:200. Como os tres primeiros sao

@@ -1370,12 +1370,13 @@ int main(int argc, char** argv) {
             const double p999J =
                 temposJ.empty() ? 0.0 : temposJ[size_t(temposJ.size() * 0.999)];
             const bool memMedida = rssBig >= 0 && rssSmall >= 0;
+            const long alvoSmallKb = long(szOf(small) / 1024) * 2 + 96L * 1024;
             std::printf("J: sem worker | blocos ate o grande=%d ate o pequeno=%d  "
                         "rms=%.6f/%.6f p99.9=%.3fms maxBlock=%.3fms  ",
                         w1, w2, rmsBig, rmsSmall, p999J, maxMs);
             if (memMedida)
-                std::printf("RSS %ld->%ld kB  HWM %ld->%ld kB", rssBig, rssSmall, hwmBig,
-                            hwmSmall);
+                std::printf("RSS %ld->%ld kB  HWM %ld->%ld kB  alvo<%ld kB", rssBig, rssSmall,
+                            hwmBig, hwmSmall, alvoSmallKb);
             else
                 std::printf("RSS/HWM: sem medida neste sistema");
             std::printf("  (arquivos %zu/%zu MB)\n", size_t(szOf(big) / 1048576),
@@ -1385,13 +1386,25 @@ int main(int argc, char** argv) {
             check(p999J < 1.0, "host sem worker: libertar o banco velho nao pesou no run()");
             // "A RAM do banco grande voltou" e uma assercao de ESCALA, nao de caminho:
             // o malloc so devolve paginas ao kernel quando o bloco e grande o bastante
-            // para ir por mmap. Medido com os pianos gravados: 1 256 800 -> 509 416 kB
-            // (611 MB de banco devolvidos). Com o banco sintetico de 3 MB o RSS nao se
-            // move um kB e a assercao reprovaria um codigo correto. Abaixo de 64 MB o
-            // que vale e a assercao absoluta do pico (linhas abaixo), nao esta.
+            // para ir por mmap. Com o banco sintetico de 3 MB o RSS nao se move um kB e a
+            // assercao reprovaria um codigo correto. Abaixo de 64 MB o que vale e a
+            // assercao absoluta do pico (linhas abaixo), nao esta.
+            //
+            // Ela ja foi um DELTA (rssSmall < rssBig - arquivo) e reprovava uma build
+            // correta: o rssBig so contem as paginas do float32 que as vozes tocaram, e
+            // isso muda de uma execucao para outra -- medido na MESMA build com os mesmos
+            // dois pianos e a mesma sequencia: 1 255 304 kB e 1 041 792 kB, 215 MB de
+            // diferenca que nunca foram tocados. O delta nao e uma grandeza do produto, e
+            // sim do acaso do page cache.
+            //
+            // O que nao varia e para ONDE o RSS volta: o banco pequeno sozinho. 2x o
+            // arquivo (int16 -> float32) e 96 MB de folga para as estruturas do tsf e os
+            // buffers do proprio harness. Medido: 508 160 kB contra 588 288 kB de alvo.
+            // Se o grande ficasse no ar a conta passaria de 1,2 GB, entao o poder de
+            // pegar o bug e o mesmo e a flutuencia nao.
             const bool escalaDevolve = memMedida && szOf(big) >= size_t(64) * 1048576;
             if (escalaDevolve)
-                check(rssSmall < rssBig - long(szOf(big) / 1024),
+                check(rssSmall < alvoSmallKb,
                       "host sem worker: a RAM do banco grande voltou antes de o menor entrar");
             else if (memMedida)
                 skip("host sem worker: a RAM do banco grande voltou antes de o menor entrar",

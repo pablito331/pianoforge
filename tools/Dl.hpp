@@ -11,8 +11,19 @@
 
 #if defined(_WIN32)
 
+// O MSVC define min/max como MACRO em <windows.h> quando NOMINMAX nao existe. Os
+// harnesses usam std::min/std::max depois deste include (host_stub e vst3_probe),
+// e a macro transforma `std::max(a, b)` em lixo de sintaxe. O mingw esconde o
+// problema porque so define as macros em alguns modos; o MSVC do CI nao.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
 
 // Os harnesses passam RTLD_NOW/RTLD_LOCAL; no Win32 o loader nao tem essa ideia de
@@ -33,7 +44,11 @@ inline void* dlopen(const char* path, unsigned) {
 
 inline void* dlsym(void* handle, const char* name) {
     if (!handle || !name) return nullptr;
-    return static_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
+    // GetProcAddress devolve FARPROC, que e ponteiro DE FUNCAO: nem o g++ nem o
+    // MSVC aceitam static_cast daqui para void*, entao a conversao passa por
+    // uintptr_t -- o mesmo caminho que o dlsym de verdade faz por dentro.
+    return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(
+        GetProcAddress(static_cast<HMODULE>(handle), name)));
 }
 
 inline int dlclose(void* handle) {

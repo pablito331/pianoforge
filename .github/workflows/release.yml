@@ -11,6 +11,9 @@
 #   C  standalone -- renderiza WAV com o banco sintetico e confere pico/teto
 #   D  ui_probe   -- no Linux sob Xvfb: a janela pinta sem o host chamar idle()
 #   E  ui_preview -- offscreen nos tres: o painel continua desenhando
+#   F  vst3_probe -- o mesmo plugin por fora do LV2: fabrica, 17 parametros,
+#                   estado ida-e-volta, audio e o painel dentro de um HWND
+#   G  pluginval  -- binario de terceiro, quando ele roda no runner (nao gate)
 #
 # Sem soundfont no repositorio (licenca) nem no runner: os bancos sao gerados por
 # tools/SynthBank.hpp na hora. O que so banco gravado prova (martelo, feltro,
@@ -46,10 +49,12 @@ jobs:
             os: ubuntu-latest
             libext: so
             pkg: tar.gz
+            pvzip: pluginval_Linux.zip
           - slug: windows-x64
             os: windows-latest
             libext: dll
             pkg: zip
+            pvzip: pluginval_Windows.zip
           # universal porque o mesmo painel tem de chegar aos dois chips, e o
           # backend Cocoa nao usa API acima de 10.12 (deployment target 11.0 no
           # CMakeLists). Os testes rodam no arch nativo do runner.
@@ -57,9 +62,11 @@ jobs:
             os: macos-latest
             libext: dylib
             pkg: tar.gz
+            pvzip: pluginval_macOS.zip
 
     env:
       PLUGIN: build/pianoforge.lv2/pianoforge.${{ matrix.libext }}
+      PLUGIN_UI: build/pianoforge.lv2/pianoforge_ui.${{ matrix.libext }}
 
     defaults:
       run:
@@ -83,6 +90,14 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # O SDK do VST3 nao e vendorizado: sao ~40 MB de cabecalho e helper que o
+      # historico nao precisa carregar (a licenca dele e MIT desde a serie 3.8, entao
+      # o binario sai MIT junto -- ver NOTICE). O script abaixo e o mesmo que a
+      # maquina de desenvolvimento usa, entao CI e local compilam a MESMA tag -- sem
+      # cache, porque a tag mora no script e um cache velho viraria outro SDK.
+      - name: VST3 SDK
+        run: bash scripts/get_vst3sdk.sh
+
       - name: Configure
         if: runner.os != 'macOS'
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -98,15 +113,33 @@ jobs:
         run: cmake --build build --config Release -j 3
 
       # No Windows todo binario sai com ".exe", e `./build/pforge_host_test` nao e o
-      # mesmo caminho. Resolver uma vez aqui, com o sufixo real do que existe, e mais
-      # honesto do que confiar no PATHEXT do shell de cada runner.
+      # mesmo caminho. Pior: o gerador do Visual Studio (o default no runner Windows)
+      # e multi-config e poe tudo em build/Release/, nao em build/.
+      #
+      # Os candidatos sao listados um por um de proposito: `find -maxdepth` e extensao
+      # do GNU find e o find do macOS e BSD (falha com "unknown primary"), e `| head`
+      # fecha o pipe antes do fim e com pipefail devolve 141 num build que estava bom.
       - name: Caminhos dos executaveis
         run: |
-          for t in pforge_host_test pforge_dsp_stages pforge_standalone pforge_ui_preview pforge_ui_probe; do
-            exe="./build/$t"
-            [ -f "$exe" ] || exe="./build/$t.exe"
+          for t in pforge_host_test pforge_dsp_stages pforge_standalone pforge_ui_preview pforge_ui_probe pforge_vst3_probe; do
+            exe=""
+            for cand in "build/$t" "build/$t.exe" "build/Release/$t" "build/Release/$t.exe"; do
+              if [ -f "$cand" ]; then exe="$cand"; break; fi
+            done
+            if [ -z "$exe" ]; then
+              # O ui_probe so nasce onde ha X11: em Windows e macOS ele nao existe.
+              [ "$t" = pforge_ui_probe ] || { echo "o executavel $t nao foi construido"; exit 1; }
+            fi
             echo "EXE_$t=$exe" >> "$GITHUB_ENV"
           done
+          # O bundle .vst3 e uma PASTA, e onde ela cai depende do gerador que o
+          # CMake escolheu (Ninja/Make: build/vst3; Visual Studio: build/Release/vst3).
+          VST3=""
+          for cand in build/vst3/PianoForge.vst3 build/Release/vst3/PianoForge.vst3; do
+            if [ -d "$cand" ]; then VST3="$cand"; break; fi
+          done
+          [ -n "$VST3" ] || { echo "o bundle PianoForge.vst3 nao foi montado"; exit 1; }
+          echo "VST3=$VST3" >> "$GITHUB_ENV"
 
       - name: "A: suíte do plugin (nada auto-carrega, load fora do run(), pedal, status)"
         run: |
@@ -130,24 +163,82 @@ jobs:
           grep -E 'Teto cheio:  *0 amostras' render.log
           awk '/Pico maximo/ { if ($3 + 0 < 0.01) { print "render saiu mudo: " $0; exit 1 } }' render.log
 
-      - name: "D: a UI pinta sem o host bombear idle() (X11 + Xvfb)"
+      # Um unico Xvfb servindo as duas UIs: o painel nao sabe de qual plugin ele
+      # veio (pfui::createUi e a mesma fabrica nos dois), entao a prova tambem e
+      # a mesma -- so muda quem chama show() e por qual API.
+      - name: "D: a UI pinta sem o host bombear idle() (LV2 e VST3, X11 + Xvfb)"
         if: runner.os == 'Linux'
         run: |
           # Xvfb em vez de xvfb-run: unicos requisitos sao o binario e um socket.
           Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
           XVFB=$!
           for _ in $(seq 25); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
-          DISPLAY=:99 ./build/pforge_ui_probe \
-            --so build/pianoforge.lv2/pianoforge_ui.so --noidle
-          RC=$?
+          export DISPLAY=:99
+          RC=0
+          "$EXE_pforge_ui_probe" --so "$PLUGIN_UI" --noidle || RC=1
+          # agora o mesmo painel chegando por IPlugView/attached()
+          "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe_ui --ui || RC=1
           kill "$XVFB" 2>/dev/null || true
           exit $RC
+
+      # No Windows o container e um HWND de verdade, entao nao ha servidor grafico
+      # para levantar. No macOS o painel e uma NSView e a sessao do runner nao
+      # garante window server: e o unico backend sem prova de UI em CI.
+      - name: "D2: o mesmo painel dentro de um HWND (Windows)"
+        if: runner.os == 'Windows'
+        run: "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe_ui --ui
 
       - name: "E: preview offscreen do painel"
         run: |
           "$EXE_pforge_ui_preview" --state normal --status ready --presets 2 --preset 1 \
             --out painel.ppm
           test -s painel.ppm
+
+      # O plugin abre mudo por decisao do produto; entao a prova de audio do VST3
+      # e a mesma do LV2: entrega um estado que aponta para um banco sintetico e
+      # espera amostra nao-nula. O banco e gerado aqui, nada vem gravado.
+      - name: "F: o VST3 responde a um host de verdade"
+        run: "$EXE_pforge_vst3_probe" "$VST3" --work vst3probe
+
+      # pluginval e um host de terceiro e julga o que o nosso probe nao julga
+      # (thread-safety, layout de barramento, automacao sem gesto). Ele NAO e
+      # gate: um binario baixado da rede, rodando num runner sem placa de audio,
+      # nao pode reprovar um build que as provas acima aprovaram. A saida fica
+      # no log de qualquer forma, e "FAILED" ali e bug de verdade.
+      - name: "G: pluginval (informativo)"
+        continue-on-error: true
+        run: |
+          mkdir -p pv
+          if ! curl -fsSL -o pv.zip \
+              "https://github.com/Tracktion/pluginval/releases/download/v1.0.4/${{ matrix.pvzip }}"; then
+            echo "pluginval: nao baixou (sem rede?); nada a fazer aqui"
+            exit 0
+          fi
+          ( cd pv && cmake -E tar xf ../pv.zip )
+          chmod -R +x pv 2>/dev/null || true
+          # Candidatos um por um: `find -maxdepth` nao existe no find do macOS, e o
+          # zip do macOS traz o binario dentro do .app.
+          PV=""
+          for cand in pv/pluginval pv/pluginval.exe pv/pluginval.app/Contents/MacOS/pluginval; do
+            if [ -f "$cand" ]; then PV="$cand"; break; fi
+          done
+          if [ -z "$PV" ]; then echo "pluginval: binario nao achado no zip"; exit 0; fi
+          if [ '${{ runner.os }}' = 'Linux' ]; then
+            # mesmo truque do passo D: o pluginval e um app JUCE e quer um display
+            Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
+            XVFB=$!
+            for _ in $(seq 25); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+            export DISPLAY=:99
+          fi
+          if [ '${{ runner.os }}' = 'macOS' ]; then
+            # binario vindo da rede carrega a quarentena do Gatekeeper
+            xattr -dr com.apple.quarantine pv 2>/dev/null || true
+          fi
+          "$PV" --strictness-level 5 --skip-gui-tests --output-dir pluginval-out \
+            --validate "$VST3" || true
+          # o veredito fica no log; o --skip-gui-tests e porque a UI ja tem o
+          # passo D e D2, e abrir editor num runner sem tela nao prova nada novo
+          grep -rhiE 'FAILED|ALL TESTS PASSED' pluginval-out 2>/dev/null | tail -40 || true
 
       - name: Empacota
         run: |
@@ -156,10 +247,17 @@ jobs:
           NAME="pianoforge-${VERSION}-${{ matrix.slug }}"
           mkdir -p dist/"$NAME"
           cp -r build/pianoforge.lv2 dist/"$NAME"/
-          for f in pforge_standalone pforge_standalone.exe; do
-            [ -f "build/$f" ] && cp "build/$f" dist/"$NAME"/
-          done
+          # O pacote leva os dois formatos: quem ja usa LV2 nao muda nada, e o
+          # mesmo painel abre em REAPER/Cubase/Bitwig pelo .vst3.
+          cp -r "$VST3" dist/"$NAME"/
+          # O standalone e o unico binario do pacote que roda sem host; o caminho vem
+          # do step "Caminhos dos executaveis" (no Windows/VS ele esta em build/Release).
+          cp "$EXE_pforge_standalone" dist/"$NAME"/
           cp LICENSE NOTICE README.md dist/"$NAME"/
+          # A captura do painel entra no pacote (mesmo caminho do README) e e o que
+          # a pagina da release mostra: o usuario ve o plugin antes de instalar.
+          mkdir -p dist/"$NAME"/docs/images
+          cp docs/images/pianoforge-painel.png dist/"$NAME"/docs/images/
           cd dist
           if [ '${{ matrix.pkg }}' = 'tar.gz' ]; then
             tar -czf "$NAME.tar.gz" "$NAME"
@@ -195,8 +293,8 @@ jobs:
         run: |
           find baixados -type f | tee arquivos.txt
           mapfile -a FILES < arquivos.txt
-          # Sem --generate-notes: o gh trata as duas opções de nota como excludentes,
-          # e um repo no primeiro tag nao tem historia nenhuma para "gerar" nota.
+          # Aspas SIMPLES na nota: dentro de "..." o bash comecaria a interpretar
+          # crase como comando, e o \` que resolvia isso nao e escape valido de YAML.
           gh release create "$TAG" "${FILES[@]}" \
             --title "PianoForge $TAG" \
-            --notes "Instale a pasta \`pianoforge.lv2\` em \`~/.lv2\` (Linux), \`~/Library/Audio/Plug-Ins/LV2\` (macOS) ou \`%APPDATA%\\\\LV2\` (Windows). O plugin abre mudo por decisao: registre seus soundfonts no painel e escolha um. Nada de soundfont vem junto -- questao de licenca, nao de espaco."
+            --notes 'Duas pastas, o mesmo painel: instale `pianoforge.lv2` em `~/.lv2` (Linux), `~/Library/Audio/Plug-Ins/LV2` (macOS) ou `%LOCALAPPDATA%\Programs\Common\LV2` (Windows), e `PianoForge.vst3` em `~/.vst3` (Linux), `~/Library/Audio/Plug-Ins/VST3` (macOS) ou `%LOCALAPPDATA%\Programs\Common\VST3` (Windows). O plugin abre mudo por decisao: registre seus soundfonts no painel e escolha um. Nada de soundfont vem junto -- questao de licenca, nao de espaco. A captura do painel vai no pacote em `docs/images/pianoforge-painel.png`. Licenca: MIT nos dois formatos -- o SDK do VST3 e MIT desde a serie 3.8, entao o `.vst3` nao herda GPLv3 de nada; ver `NOTICE`.'

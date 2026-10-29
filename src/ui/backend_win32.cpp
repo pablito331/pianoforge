@@ -5,15 +5,21 @@
 // manda: criar o window filho do host, apresentar a Surface ARGB, bombear
 // mensagens nativas e abrir o dialogo de arquivo do Windows.
 //
-// Por que uma thread propria, que e a decisao estrutural deste arquivo: no X11
-// descobrimos que o REAPER nunca chama idle() nem show(), e pintar num window sem
-// ancestral viewable e descartado. No Win32 a mesma regra vem do outro lado -- quem
-// precisa da thread e o Windows: um window so recebe e responde mensagens na thread
-// que o criou, e SetFocus/ShowWindow/GDI de uma thread estranha ou falam com a fila
-// errada ou derrubam o processo. Entao a thread do host faz instantiate(), espera o
-// window nascer e recebe o HWND; daqui em diante tudo o que toca a janela acontece
-// na thread da UI, e o que a thread do host quer pedir (redesenhar, mapear) chega
-// por PostMessage.
+// Por que NAO ha thread propria, que e a decisao estrutural deste arquivo (e a
+// oposta do backend X11): um window pertence a thread que o criou, e no Windows
+// criar OU destruir um filho de uma janela de outra thread exige que essa outra
+// thread bombeie mensagens. O host chama instantiate() na thread dele e fica parado
+// ali esperando o retorno, entao a criacao travava: o probe pegou a thread da UI
+// presa em NtUserCreateWindowEx -- e, depois de WS_EX_NOPARENTNOTIFY, presa em
+// NtUserDestroyWindow no cleanup -- enquanto o instantiate nunca voltava para
+// devolver o HWND (o widget saia NULL e o painel nao abria de jeito nenhum).
+//
+// Aqui tudo roda na thread que chama instantiate(), que e a dona do HWND recebido
+// em ui:parent: desenho no WM_PAINT e no idle(), input direto no WndProc,
+// ShowWindow/SetFocus diretos. Um host que nunca chame idle() continua atendido,
+// porque o WM_PAINT chega pelo laco de mensagens dele; o que so um laco proprio
+// daria (animacao) e coberto por um timer de 33 ms armado apenas enquanto ha algo
+// animando e desarmado assim que o painel fica em repouso.
 //
 // Tres coisas que este arquivo NAO faz de proposito:
 //   - nao chama SetProcessDPIAware nem trata WM_DPICHANGED. O processo e do host;
@@ -30,9 +36,24 @@
 #include "ForgeUi.hpp"
 
 #include "ForgeTheme.hpp"
+#include "UiFactory.hpp"
 
+// UNICODE/_UNICODE antes do <windows.h>: este arquivo so chama a familia W
+// (CreateWindowExW, DefWindowProcW, ...), mas sem UNICODE os macros IDC_*/IDI_*
+// expandem para a variante A e o LoadCursorW recusa um LPSTR. Quem ja definiu
+// (host, toolchain) nao e atropelado.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
 #include <windows.h>
 
 #include <windowsx.h>       // GET_X_LPARAM / GET_Y_LPARAM
@@ -41,14 +62,12 @@
 #include <shlwapi.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -61,14 +80,14 @@ using namespace pforge;   // Surface, forge:: (a paleta)
 constexpr int kWinW = 1000;
 constexpr int kWinH = 520;
 
-// Mensagens de controle entre a thread do host e a thread da janela. PostMessage e
-// a unica travessia segura entre as duas.
-constexpr UINT kMsgWake = WM_APP + 1;    // ha frame novo pendente
-constexpr UINT kMsgMap = WM_APP + 2;     // show() do host
-constexpr UINT kMsgUnmap = WM_APP + 3;   // hide() do host
+// Id do timer do relogio do painel. Fagulha e brasa andam a 30 Hz -- o mesmo passo
+// que o laco proprio do backend X11 usa -- e so existem enquanto ha animacao.
+constexpr UINT_PTR kFrameTimer = 1;
+
+// Relogio lento do formato sem idleInterface (VST3). Ver syncTimer().
+constexpr UINT_PTR kPollTimer = 2;
 
 const wchar_t* kPanelClass = L"PianoForgeForgePanel";
-const wchar_t* kWakeClass = L"PianoForgeForgeWake";
 
 // ---- UTF-16 -> UTF-8 -----------------------------------------------------
 // O registro de soundfonts e UTF-8 (o mesmo arquivo nos tres SOs) e o Windows so
@@ -108,29 +127,33 @@ public:
     Win32ForgeUi(HWND parent, const std::string& bundlePath, LV2UI_Write_Function writeFn,
                  LV2UI_Controller controller)
         : ForgeUi(bundlePath, writeFn, controller), parent_(parent) {
-        // Ha bomba de eventos propria: idle() do host nao desenha, e todo pedido de
-        // redraw vira PostMessage. Deixar isso falso faria o host desenhar na thread
-        // dele, que nao e a dona do window.
-        hasEventThread_ = true;
-        readyEv_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        running_.store(true, std::memory_order_release);
-        pump_ = std::thread([this] { pumpLoop(); });
-        // instantiate() tem de devolver o HWND no mesmo retorno: e o que o host da ao
-        // Windows como filho do container dele. A espera e o unico ponto em que as
-        // duas threads se encontram e ela nao segura trava nenhuma; a pump_ aponta o
-        // evento mesmo se a criacao da janela falhar, entao no pior caso o custo e um
-        // instantiate que devolve nullptr na hora.
-        if (readyEv_) WaitForSingleObject(readyEv_, 5000);
+        // Sem thread propria: a janela nasce e morre na thread que chama
+        // instantiate(), que e a dona do HWND de ui:parent. Qualquer outra escolha
+        // trava o host na criacao do filho (ver o comentario do topo do arquivo).
+        // hasEventThread_ = false diz a ForgeUi que quem desenha e o idle()/WM_PAINT
+        // desta thread, e nao um laco nosso.
+        hasEventThread_ = false;
+        // Os dialogos comuns e o shell namespace exigem COM nesta thread. Se o host
+        // ja inicializou (o normal), a chamada devolve S_FALSE e continua sendo nossa
+        // a obrigacao de balancear com CoUninitialize.
+        coMine_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
+        createWindow();
     }
 
     ~Win32ForgeUi() override {
-        running_.store(false, std::memory_order_release);
-        if (wake_) PostMessageW(wake_, kMsgWake, 0, 0);
-        if (pump_.joinable()) pump_.join();   // a pump_ destroi janela, DIB e DC
-        if (readyEv_) CloseHandle(readyEv_);
+        destroyWindow();             // mesma thread que criou: caminho seguro
+        if (coMine_) CoUninitialize();
     }
 
     HWND widget() const { return win_; }
+
+    // O host repassou valor de porta (na thread dele, que agora e a nossa): marcar
+    // frame pendente e rearmar o relogio, senao um estado que chega por fora --
+    // "FORJANDO", contagem de presets -- so apareceria no proximo redesenho.
+    void nudge() override {
+        ForgeUi::nudge();        // needDraw_ + InvalidateRect
+        syncTimer();
+    }
 
 protected:
     // ---- apresentacao ----------------------------------------------------
@@ -186,29 +209,27 @@ protected:
         }
     }
 
-    void requestRedraw() override { postCtrl(kMsgWake); }
-
-    // O window e filho do container do host, que esta em OUTRA thread. SetFocus nao
-    // atravessa para o foreground de quem nao e a nossa thread -- a troca de foco e
-    // por input queue, entao as duas filas sao coladas por um instante.
-    void focusWindow() override {
-        if (!win_) return;
-        HWND fg = GetForegroundWindow();
-        const DWORD fgTid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
-        const DWORD myTid = GetCurrentThreadId();
-        const bool attach = fgTid != 0 && fgTid != myTid;
-        if (attach) AttachThreadInput(fgTid, myTid, TRUE);
-        SetFocus(win_);
-        if (attach) AttachThreadInput(fgTid, myTid, FALSE);
+    void requestRedraw() override {
+        if (win_) InvalidateRect(win_, nullptr, FALSE);
     }
 
-    // show()/hide() chegam da thread do host; ShowWindow tem de rodar na dona da
-    // janela, por isso o pedido e postado e nao chamado. O guarda nao e enfeite:
-    // PostMessage com hwnd NULL nao e "nenhum destinatario", e uma mensagem de
-    // THREAD entregue a fila de quem chamou -- aqui, a do host, que nao tem laço
-    // nenhum para consumi-la.
-    void mapWindow() override { postCtrl(kMsgMap); }
-    void unmapWindow() override { postCtrl(kMsgUnmap); }
+    // Tudo desta thread agora: sem AttachThreadInput, sem SetFocus atravessando
+    // fila de input de outra thread.
+    void focusWindow() override {
+        if (win_) SetFocus(win_);
+    }
+
+    // show()/hide() do host. Antes o pedido ia por PostMessage porque ShowWindow tem
+    // de rodar na dona da janela; agora a dona e esta thread, entao e chamada direta.
+    void mapWindow() override {
+        if (!win_) return;
+        ShowWindow(win_, SW_SHOW);
+        needDraw_ = true;
+    }
+
+    void unmapWindow() override {
+        if (win_) ShowWindow(win_, SW_HIDE);
+    }
 
     std::vector<std::string> browseFiles() override {
         std::vector<wchar_t> buf(32768, L'\0');
@@ -270,55 +291,35 @@ protected:
     }
 
 private:
-    // Traversal host -> thread da janela. wake_ pode estar nulo (janela criada antes
-    // do message-only window, ou criacao falhou); PostMessage com hwnd NULL seria uma
-    // mensagem de THREAD na fila do proprio chamador.
-    void postCtrl(UINT m) {
-        if (wake_) PostMessageW(wake_, m, 0, 0);
+    // ---- relogio do painel -------------------------------------------------
+    // Fagulha, brasa de carregamento e toast vivem por TEMPO, nao por evento. Enquanto
+    // algum estiver aceso o painel precisa de frame a 30 Hz; em repouso nenhum timer
+    // fica armado -- o laco de mensagens agora e o do host, e um painel parado nao
+    // deve acordar a thread do DAW trinta vezes por segundo.
+    void syncTimer() {
+        if (!win_) return;
+        // O timer de 5 Hz e o unico caminho do VST3: IPlugView nao tem idle() e
+        // nenhum DAW chama nada no painel por conta propria, entao automacao e
+        // estado do banco chegariam so no proximo clique. Custa um serviceFrame
+        // que nao desenha quando nada mudou.
+        SetTimer(win_, kPollTimer, 200, nullptr);
+        if (animating()) SetTimer(win_, kFrameTimer, 33, nullptr);
+        else KillTimer(win_, kFrameTimer);
     }
 
-    // ---- thread da janela -------------------------------------------------
-    // Mesma forma do pumpLoop() do X11: um frame, depois as mensagens, depois o
-    // dialogo (FORA do lock -- GetOpenFileName pode ficar minutos aberto, e com a
-    // trava tomada o port_event da thread principal do host pararia junto, ou seja,
-    // o DAW inteiro), depois dormir. Dormir aqui e MsgWait, que acorda tanto com
-    // mensagem nova quanto pelo timeout do relogio do painel.
-    void pumpLoop() {
-        // Os dialogos comuns e o shell namespace exigem coinit nesta thread; cada
-        // thread tem o seu, e o do host nao e tocado.
-        const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        const bool coMine = SUCCEEDED(hr);
-
-        createWindow();
-        SetEvent(readyEv_);
-
-        MSG msg;
-        bool more = true;
-        while (running_.load(std::memory_order_acquire) && more) {
-            serviceFrame();
-            int handled = 0;
-            while (running_.load(std::memory_order_acquire) &&
-                   PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                if (msg.message == WM_QUIT) { more = false; break; }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-                if (++handled >= 256) break;   // rajada de mensagem nao trava o frame
-            }
-            if (!running_.load(std::memory_order_acquire) || !more) break;
-            std::string dialog;
-            if (takeDialogRequest(dialog)) {
-                runDialogRequest(dialog);
-                continue;
-            }
-            if (needDraw_) continue;
-            const bool anim = animating();
-            MsgWaitForMultipleObjectsEx(0, nullptr, anim ? 33 : 1000, QS_ALLINPUT,
-                                        MWMO_INPUTAVAILABLE);
-        }
-        destroyWindow();
-        if (coMine) CoUninitialize();
+    // O pedido de dialogo nasce num handler de mouse/tecla e tem de ser executado
+    // FORA do lock: GetOpenFileName fica minutos aberto e roda o proprio laco de
+    // mensagens, e com a trava tomada todo port_event vindo do plugin pararia junto.
+    // Antes quem chamava isto era o laco da thread propria; agora e o fim de cada
+    // mensagem nossa, na thread do host -- que e o que um plugin Win32 faz.
+    void runPendingDialog() {
+        std::string kind;
+        if (!takeDialogRequest(kind)) return;
+        runDialogRequest(kind);
+        syncTimer();
     }
 
+    // Roda na thread que chama instantiate(), que e a dona de parent_.
     void createWindow() {
         HINSTANCE mod = nullptr;
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -328,7 +329,10 @@ private:
                                            gdiByte(forge::iron1, 0)));
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
-        wc.style = DWORD(CS_PARENTDC | CS_HREDRAW | CS_VREDRAW);
+        // Sem CS_PARENTDC: o painel e um DIB blitado por nos, e um DC emprestado do
+        // pai traz a origem do cliente do PAI -- o painel sairia deslocado dentro do
+        // container do host.
+        wc.style = DWORD(CS_HREDRAW | CS_VREDRAW);
         wc.lpfnWndProc = &Win32ForgeUi::panelProc;
         wc.hInstance = mod;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -336,31 +340,38 @@ private:
         wc.lpszClassName = kPanelClass;
         RegisterClassExW(&wc);      // ERROR_CLASS_ALREADY_EXISTS e ok: 2a instancia
 
-        WNDCLASSEXW wk{};
-        wk.cbSize = sizeof(wk);
-        wk.lpfnWndProc = &Win32ForgeUi::wakeProc;
-        wk.hInstance = mod;
-        wk.lpszClassName = kWakeClass;
-        RegisterClassExW(&wk);
-
         // Sem ui:parent (host "flutuante") o painel precisa de janela propria: filho
-        // de janela nula nao aparece em lugar nenhum.
+        // de janela nula nao aparece em lugar nenhum. Nesse caso kWinW/kWinH sao o
+        // CLIENTE (o painel), entao a moldura entra por fora -- pedir 1000x520 de
+        // janela daria um cliente menor e o layout sairia apertado.
         const bool embedded = (parent_ != nullptr);
-        win_ = CreateWindowExW(
-            0, kPanelClass, L"PianoForge - Forja de Pianos",
-            embedded ? DWORD(WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN)
-                     : DWORD(WS_OVERLAPPEDWINDOW),
-            0, 0, kWinW, kWinH, embedded ? parent_ : nullptr, nullptr, mod, this);
+        int windowW = kWinW, windowH = kWinH;
+        if (!embedded) {
+            RECT frame{0, 0, kWinW, kWinH};
+            if (AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0)) {
+                windowW = int(frame.right - frame.left);
+                windowH = int(frame.bottom - frame.top);
+            }
+        }
+        // Se ui:parent vier de outra thread, criar o filho daqui trava o host (o
+        // Windows espera a thread dona bombear, e ela esta dentro de instantiate()).
+        // Nao ha o que consertar do nosso lado: registrar para o diagnostico acabar
+        // em um segundo, e nao em um DAW congelado sem pista.
+        if (embedded && GetWindowThreadProcessId(parent_, nullptr) != GetCurrentThreadId())
+            log("ui:parent pertence a outra thread: a criacao do painel pode travar");
+        win_ = CreateWindowExW(0, kPanelClass, L"PianoForge - Forja de Pianos",
+                               embedded ? DWORD(WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN)
+                                        : DWORD(WS_OVERLAPPEDWINDOW),
+                               0, 0, windowW, windowH, embedded ? parent_ : nullptr,
+                               nullptr, mod, this);
         if (!win_) {
             log("CreateWindowExW falhou: nenhuma janela sera criada");
             return;
         }
-        wake_ = CreateWindowExW(0, kWakeClass, L"PianoForgeWake", 0, 0, 0, 0, 0,
-                                HWND_MESSAGE, nullptr, mod, this);
 
         // Adotar o tamanho que o container do host ja tem ANTES de mostrar: pintamos
         // uma vez, e so entao a janela aparece. Mostrar primeiro daria um flick de
-        // fundo de classe, e pintar depois do ShowWindow no laço valeria o mesmo.
+        // fundo de classe, e pintar depois do ShowWindow no laco valeria o mesmo.
         RECT rc{};
         if (embedded && GetClientRect(parent_, &rc) && rc.right > 0 && rc.bottom > 0)
             adoptSize(int(rc.right), int(rc.bottom));
@@ -369,13 +380,17 @@ private:
         serviceFrame();
         ShowWindow(win_, embedded ? SW_SHOW : SW_SHOWNORMAL);
         needDraw_ = true;
+        syncTimer();
     }
 
     // Roda na thread que criou tudo: janela, DIB e DC.
     void destroyWindow() {
-        if (win_) DestroyWindow(win_);
+        if (win_) {
+            KillTimer(win_, kFrameTimer);
+            KillTimer(win_, kPollTimer);
+            DestroyWindow(win_);
+        }
         win_ = nullptr;
-        wake_ = nullptr;            // destruida junto com a thread (HWND_MESSAGE)
         if (memDc_) DeleteDC(memDc_);
         memDc_ = nullptr;
         if (dib_) DeleteObject(dib_);
@@ -396,38 +411,34 @@ private:
         return self ? self->handle(h, m, w, l) : DefWindowProcW(h, m, w, l);
     }
 
-    static LRESULT CALLBACK wakeProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-        if (m == WM_NCCREATE) {
-            SetWindowLongPtrW(h, GWLP_USERDATA,
-                              reinterpret_cast<LONG_PTR>(
-                                  reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams));
-            return DefWindowProcW(h, m, w, l);
-        }
-        auto* self = reinterpret_cast<Win32ForgeUi*>(GetWindowLongPtrW(h, GWLP_USERDATA));
-        if (!self) return DefWindowProcW(h, m, w, l);
-        switch (m) {
-            case kMsgWake:
-                self->needDraw_ = true;
-                return 0;
-            case kMsgMap:
-                if (self->win_) { ShowWindow(self->win_, SW_SHOW); self->needDraw_ = true; }
-                return 0;
-            case kMsgUnmap:
-                if (self->win_) ShowWindow(self->win_, SW_HIDE);
-                return 0;
-            default:
-                return DefWindowProcW(h, m, w, l);
-        }
+    // Todo handler que mexe estado toma a trava: o port_event do host chega pela
+    // mesma thread, mas o lock continua aqui porque write_() pode voltar em
+    // port_event no meio do gesto (trava recursiva) e porque uma segunda instancia
+    // do painel no mesmo processo tem a propria.
+    LRESULT handle(HWND h, UINT m, WPARAM w, LPARAM l) {
+        const LRESULT r = handleOne(h, m, w, l);
+        // Dialogo no fim da mensagem, nunca dentro do switch: runDialogRequest abre
+        // janela modal com laco de mensagens proprio.
+        runPendingDialog();
+        return r;
     }
 
-    // Todo handler que mexe estado toma a trava: o port_event do host roda em outra
-    // thread com a MESMA trava (recursiva, porque write_() pode voltar em
-    // port_event), e o desenho e sempre aqui.
-    LRESULT handle(HWND h, UINT m, WPARAM w, LPARAM l) {
+    LRESULT handleOne(HWND h, UINT m, WPARAM w, LPARAM l) {
         switch (m) {
             case WM_SIZE: {
                 std::lock_guard<std::recursive_mutex> lk(mtx_);
                 onWindowGeometry(LOWORD(l), HIWORD(l));
+                syncTimer();
+                return 0;
+            }
+            case WM_TIMER: {
+                if (w == kPollTimer) {
+                    serviceFrame();      // 5 Hz: automacao/estado do VST3
+                    return 0;
+                }
+                if (w != kFrameTimer) return DefWindowProcW(h, m, w, l);
+                serviceFrame();
+                syncTimer();
                 return 0;
             }
             case WM_PAINT: {
@@ -436,6 +447,7 @@ private:
                 needDraw_ = true;
                 serviceFrame();
                 EndPaint(h, &ps);
+                syncTimer();
                 return 0;
             }
             case WM_ERASEBKGND:
@@ -508,14 +520,17 @@ private:
                 return 0;
             }
             case WM_CLOSE: {
-                std::lock_guard<std::recursive_mutex> lk(mtx_);
-                closed_ = true;              // idle() devolve 1 e o host desmonta a UI
+                // Fechar a janela flutuante nao pode matar o processo: o host ainda vai
+                // chamar cleanup(). closed_ e o sinal para o idle() do host devolver 1.
+                closed_ = true;
+                KillTimer(h, kFrameTimer);
                 DestroyWindow(h);
                 win_ = nullptr;              // nao blitar mais num HWND morto
                 return 0;
             }
             case WM_DESTROY:
-                PostQuitMessage(0);
+                // NUNCA PostQuitMessage aqui: esta fila agora e a do HOST, e um
+                // WM_QUIT encerraria o laco de mensagens do DAW inteiro.
                 return 0;
             default:
                 return DefWindowProcW(h, m, w, l);
@@ -524,18 +539,39 @@ private:
 
     HWND parent_ = nullptr;
     HWND win_ = nullptr;
-    HWND wake_ = nullptr;
     HDC memDc_ = nullptr;
     HBITMAP dib_ = nullptr;
     uint32_t* dibBits_ = nullptr;
     int dibW_ = 0, dibH_ = 0;
     HBRUSH background_ = nullptr;
     wchar_t pendingSurrogate_ = 0;
-    HANDLE readyEv_ = nullptr;
-    std::thread pump_;
-    std::atomic<bool> running_{false};
+    bool coMine_ = false;        // o CoInitializeEx desta thread foi nosso
     bool loggedDraw_ = false;
 };
+
+} // namespace pfui
+
+// ---- fabrica host-agnostica (UiFactory.hpp) ----------------------------
+// O LV2 e o VST3 entram por aqui: um caminho so para o painel existir.
+
+namespace pfui {
+
+ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
+                  LV2UI_Controller controller, void** widgetOut) {
+    auto* ui = new Win32ForgeUi(reinterpret_cast<HWND>(parent), bundlePath ? bundlePath : "",
+                                write, controller);
+    if (!ui->widget()) {
+        // Devolver um objeto sem HWND daria ao host uma area vazia para embutir e
+        // um cleanup que passa pelo DestroyWindow de uma janela que nao existe.
+        delete ui;
+        return nullptr;
+    }
+    if (widgetOut)
+        *widgetOut = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ui->widget()));
+    return ui;
+}
+
+void destroyUi(ForgeUi* ui) { delete static_cast<Win32ForgeUi*>(ui); }
 
 } // namespace pfui
 
@@ -543,8 +579,8 @@ private:
 
 namespace {
 
-pfui::Win32ForgeUi* uiFromHandle(LV2UI_Handle handle) {
-    return static_cast<pfui::Win32ForgeUi*>(handle);
+pfui::ForgeUi* uiFromHandle(LV2UI_Handle handle) {
+    return static_cast<pfui::ForgeUi*>(handle);
 }
 
 LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
@@ -567,22 +603,19 @@ LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
         }
     }
 
-    auto* ui = new pfui::Win32ForgeUi(parent, bundlePath ? bundlePath : "", writeFunction,
-                                      controller);
-    if (!ui->widget()) {
-        delete ui;
-        return nullptr;
-    }
-    *widget = reinterpret_cast<LV2UI_Widget>(reinterpret_cast<uintptr_t>(ui->widget()));
+    void* native = nullptr;
+    pfui::ForgeUi* ui = pfui::createUi(parent, bundlePath, writeFunction, controller, &native);
+    if (!ui) return nullptr;
+    *widget = reinterpret_cast<LV2UI_Widget>(reinterpret_cast<uintptr_t>(native));
     // Sem pedir o tamanho, um host que hospeda a UI numa aba nao tem como saber
     // 1000x520 e deixa o container do tamanho dele.
     if (resize && resize->ui_resize)
-        resize->ui_resize(resize->handle, pfui::Win32ForgeUi::preferredWidth(),
-                          pfui::Win32ForgeUi::preferredHeight());
+        resize->ui_resize(resize->handle, pfui::ForgeUi::preferredWidth(),
+                          pfui::ForgeUi::preferredHeight());
     return ui;
 }
 
-void uiCleanup(LV2UI_Handle handle) { delete uiFromHandle(handle); }
+void uiCleanup(LV2UI_Handle handle) { pfui::destroyUi(uiFromHandle(handle)); }
 
 // A assinatura do typedef e (handle, port_index, BUFFER_SIZE, FORMAT, buffer)
 // -- third_party/lv2/lv2/include/lv2/ui/ui.h:200. Os tres primeiros sao inteiros,
@@ -591,7 +624,13 @@ void uiCleanup(LV2UI_Handle handle) { delete uiFromHandle(handle); }
 // ordem no header, nunca na memoria.
 void uiPortEvent(LV2UI_Handle handle, uint32_t port, uint32_t bufferSize, uint32_t format,
                  const void* buffer) {
-    uiFromHandle(handle)->portEvent(port, bufferSize, format, buffer);
+    auto* ui = uiFromHandle(handle);
+    ui->portEvent(port, bufferSize, format, buffer);
+    // Sem thread propria, ForgeUi::portEvent so registra o estado -- quem acorda o
+    // desenho e a janela. Sem este empurrao, um host que nunca chama idle() (o
+    // REAPER nunca chama) mostraria "FORJANDO" e a contagem de presets so no proximo
+    // clique, porque nada invalidou a area.
+    ui->nudge();
 }
 
 int uiIdle(LV2UI_Handle handle) { return uiFromHandle(handle)->idle(); }
