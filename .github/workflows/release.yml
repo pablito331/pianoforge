@@ -255,6 +255,18 @@ jobs:
           case "$VERSION" in v*) ;; *) VERSION="ci-$(git rev-parse --short HEAD)" ;; esac
           NAME="pianoforge-${VERSION}-${{ matrix.slug }}"
           mkdir -p dist/"$NAME"
+          # Antes de copiar: o painel nao desenha uma letra quando nao acha as fontes,
+          # e o sintoma que chega ao usuario e "o plugin abriu vazio", nao um erro de
+          # instalacao. Foi o que aconteceu com um .vst3 copiado como ARQUIVO SOLTO,
+          # fora do bundle e sem o Contents/Resources ao lado. O pacote publicado nao
+          # pode ter essa forma, entao a fonte ausente aborta aqui e nao na maquina
+          # de quem baixou.
+          for f in "$VST3/Contents/Resources/DejaVuSans.ttf" build/pianoforge.lv2/DejaVuSans.ttf; do
+            if [ ! -f "$f" ]; then
+              echo "::error::sem $f: o painel abriria sem texto neste pacote"
+              exit 1
+            fi
+          done
           cp -r build/pianoforge.lv2 dist/"$NAME"/
           # O pacote leva os dois formatos: quem ja usa LV2 nao muda nada, e o
           # mesmo painel abre em REAPER/Cubase/Bitwig pelo .vst3.

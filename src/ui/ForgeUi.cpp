@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>                // getenv (WINDIR)
 #include <filesystem>
 
 namespace pfui {
@@ -934,25 +935,62 @@ std::vector<std::string> ForgeUi::splitLines(const std::string& s) {
 // host instalar so o .so, cai no diretorio de fontes do SO e, sem serif/mono, o
 // Fonts::load degrada para o sans em vez de sumir com o texto.
 void ForgeUi::loadFonts(const std::string& bundlePath) {
-    auto firstExisting = [&](const char* name) -> std::string {
-        std::vector<std::string> tries = {
-            bundlePath + "/" + name,
-            std::string("assets/ui/") + name,
-        };
-#if defined(__linux__)
-        tries.push_back(std::string("/usr/share/fonts/truetype/") + name);
-        tries.push_back(std::string("/usr/share/fonts/") + name);
+    // Pastas de sistema por SO. No Windows as alternativas abaixo sao ARQUIVOS
+    // DIFERENTES, nao DejaVu noutro diretorio: la a fonte do sistema tem o nome que
+    // o fabricante escolheu, e um DejaVuSans.ttf em C:\Windows\Fonts e excecao.
+    std::vector<std::string> dirs{bundlePath, "assets/ui"};
+#if defined(_WIN32)
+    if (const char* w = std::getenv("WINDIR"); w && *w) dirs.push_back(std::string(w) + "\\Fonts");
 #elif defined(__APPLE__)
-        tries.push_back("/System/Library/Fonts/Supplemental/DejaVuSans.ttf");
+    dirs.push_back("/System/Library/Fonts/Supplemental");
+    dirs.push_back("/System/Library/Fonts");
+#else
+    // O caminho certo do pacote fonts-dejavu-core; os outros dois sao rede de
+    // seguranca para distro que instale em outro lugar.
+    dirs.push_back("/usr/share/fonts/truetype/dejavu");
+    dirs.push_back("/usr/share/fonts/truetype/liberation");
+    dirs.push_back("/usr/share/fonts");
 #endif
-        for (const std::string& p : tries) {
-            std::error_code ec;
-            if (std::filesystem::exists(p, ec)) return p;
-        }
+
+    // Um papel (sans, negrito, serifada, mono) procurado na ordem: bundle, caminho
+    // relativo do repositorio, fontes do sistema. O primeiro que existir vence.
+    auto find = [&](std::initializer_list<const char*> names) -> std::string {
+        for (const char* name : names)
+            for (const std::string& dir : dirs) {
+                const std::string p = dir + "/" + name;
+                std::error_code ec;
+                if (std::filesystem::exists(p, ec)) return p;
+            }
         return {};
     };
-    fonts_.load(firstExisting("DejaVuSans.ttf"), firstExisting("DejaVuSans-Bold.ttf"),
-                firstExisting("DejaVuSerif.ttf"), firstExisting("DejaVuSansMono.ttf"));
+#if defined(_WIN32)
+    const std::string sans  = find({ "DejaVuSans.ttf", "segoeui.ttf", "arial.ttf" });
+    const std::string bold  = find({ "DejaVuSans-Bold.ttf", "segoeuib.ttf", "arialbd.ttf" });
+    const std::string serif = find({ "DejaVuSerif.ttf", "georgia.ttf", "times.ttf" });
+    const std::string mono  = find({ "DejaVuSansMono.ttf", "consola.ttf", "cour.ttf" });
+#elif defined(__APPLE__)
+    const std::string sans  = find({ "DejaVuSans.ttf", "Helvetica.ttc" });
+    const std::string bold  = find({ "DejaVuSans-Bold.ttf", "Arial Bold.ttf" });
+    const std::string serif = find({ "DejaVuSerif.ttf", "Times New Roman.ttf" });
+    const std::string mono  = find({ "DejaVuSansMono.ttf", "Courier New.ttf" });
+#else
+    const std::string sans  = find({ "DejaVuSans.ttf", "LiberationSans-Regular.ttf" });
+    const std::string bold  = find({ "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf" });
+    const std::string serif = find({ "DejaVuSerif.ttf", "LiberationSerif-Regular.ttf" });
+    const std::string mono  = find({ "DejaVuSansMono.ttf", "LiberationMono-Regular.ttf" });
+#endif
+    fonts_.load(sans, bold, serif, mono);
+
+    // O pior modo de falha do painel, e o unico que nao desenha nem um aviso: sem
+    // o sans, Font::ok_ fica falso e draw() volta na primeira linha, entao o painel
+    // abre com os aneis, as chapas e o veu -- e nenhuma letra. Foi assim que o
+    // .vst3 copiado como ARQUIVO SOLTO, sem o Contents/Resources do bundle, abriu
+    // no REAPER. O stderr e o que sobra para dizer por que; a linha nomeia o
+    // caminho que o plugin procurou.
+    if (sans.empty())
+        log(("sem fonte para o painel: nenhum DejaVuSans.ttf (nem fonte do sistema) em '" +
+             bundlePath + "' ou nas pastas de fonte do SO. O painel vai desenhar sem "
+             "texto -- o bundle precisa de Contents/Resources ao lado do binario.").c_str());
 }
 
 } // namespace pfui
