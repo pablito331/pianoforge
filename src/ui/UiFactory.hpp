@@ -27,8 +27,17 @@ namespace pfui {
 // widgetOut (opcional): recebe o handle nativo do painel, que e o que o host
 // embute. Devolve nullptr se a janela nao pode ser criada -- quem chama NAO
 // pode seguir com um objeto sem janela.
+//
+// resize (opcional): a feature LV2UI_Resize que o host ofereceu, ou nullptr. O
+// tamanho do painel e do container do host, e um host pode demorar a ter esse
+// container: por isso quem pede o tamanho e o backend, que sabe repetir o pedido
+// e acompanhar o container depois. Ver Win32ForgeUi::seguirContainer() -- o
+// REAPER no Windows entrega ui:parent com 65x86 e so cresce quando aplica o
+// pedido, o que zerava o painel num pedido unico feito no instantiate. No VST3
+// vem sempre nullptr: la quem manda o tamanho e o IPlugView.
 ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut);
+                  LV2UI_Controller controller, void** widgetOut,
+                  const LV2UI_Resize* resize = nullptr);
 
 // Destroi na thread em que foi criado: no Win32 isso nao e formalidade, destruir
 // um filho de janela de outra thread trava o processo inteiro.

@@ -662,8 +662,13 @@ private:
 
 namespace pfui {
 
+// O resize do host chega aqui e nao e usado: no X11 quem avisa o painel do tamanho
+// e o ConfigureNotify da PROPRIA janela (o host redimensiona o filho ao aplicar o
+// pedido), e o descriptor pede o tamanho uma vez. No Win32 nao existe esse aviso,
+// e e la que o pedido precisa se repetir -- ver backend_win32.cpp.
 ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut) {
+                  LV2UI_Controller controller, void** widgetOut,
+                  const LV2UI_Resize* /*resize*/) {
     if (!hasFileDialogHelper())
         std::fprintf(stderr, "[PianoForge UI] nem zenity nem qarma no PATH: os botoes "
                              "Procurar/+ Pasta vao avisar, e o registro se editando "

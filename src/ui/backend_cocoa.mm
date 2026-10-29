@@ -457,8 +457,11 @@ private:
 
 namespace pfui {
 
+// Como no X11, o resize nao passa por aqui: no Cocoa o painel e uma NSView que o
+// host redimensiona (a layer acompanha), e o descriptor pede o tamanho uma vez.
 ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut) {
+                  LV2UI_Controller controller, void** widgetOut,
+                  const LV2UI_Resize* /*resize*/) {
     auto* ui = new CocoaForgeUi((__bridge NSView*)parent, bundlePath ? bundlePath : "", write,
                                 controller);
     if (!ui->widget()) {

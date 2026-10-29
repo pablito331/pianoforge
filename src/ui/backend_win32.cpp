@@ -125,8 +125,8 @@ namespace pfui {
 class Win32ForgeUi final : public ForgeUi {
 public:
     Win32ForgeUi(HWND parent, const std::string& bundlePath, LV2UI_Write_Function writeFn,
-                 LV2UI_Controller controller)
-        : ForgeUi(bundlePath, writeFn, controller), parent_(parent) {
+                 LV2UI_Controller controller, const LV2UI_Resize* resize)
+        : ForgeUi(bundlePath, writeFn, controller), parent_(parent), resize_(resize) {
         // Sem thread propria: a janela nasce e morre na thread que chama
         // instantiate(), que e a dona do HWND de ui:parent. Qualquer outra escolha
         // trava o host na criacao do filho (ver o comentario do topo do arquivo).
@@ -225,6 +225,10 @@ protected:
         if (!win_) return;
         ShowWindow(win_, SW_SHOW);
         needDraw_ = true;
+        // O host abre o editor quando a janela dele ja existe: e a segunda chance de
+        // um pedido de tamanho que caiu no vazio durante o instantiate.
+        pedirTamanho();
+        seguirContainer();
     }
 
     void unmapWindow() override {
@@ -307,6 +311,41 @@ private:
         else KillTimer(win_, kFrameTimer);
     }
 
+    // ---- tamanho: quem manda e o container do host -------------------------
+    // O REAPER 7.83 entrega ui:parent com 65x86 -- o tamanho do placeholder dele --
+    // e so aplica o ui:resize depois que o editor dele existe. Um pedido unico,
+    // feito dentro do instantiate, deixa o painel daquele tamanho para sempre: foi
+    // o que apareceu como "o LV2 abriu minusculo".
+    void pedirTamanho() {
+        if (!resize_ || !resize_->ui_resize) return;
+        ++pedidosDeTamanho_;
+        if (resize_->ui_resize(resize_->handle, kWinW, kWinH) != 0 && pedidosDeTamanho_ == 1)
+            log("o host recusou o tamanho do painel (ui:resize): o container fica no tamanho "
+                "que ele deu, e o painel se aperta nele");
+    }
+
+    // Um filho do Win32 nao acompanha o pai: aqui nao existe layout. Se o host cresce
+    // o container depois -- o REAPER cresce quando aplica o pedido, e um host que
+    // sobe a janela no show() cresce ainda mais tarde --, o nosso HWND continua do
+    // tamanho velho e o painel aparece espremido num canto. A cada tique lento o
+    // painel compara com o cliente do pai e adota o tamanho dele; enquanto o pai
+    // estiver menor que o design o pedido volta, tres vezes, que e o que cobre
+    // "agora", "no primeiro idle" e "quando o editor abriu".
+    void seguirContainer() {
+        if (!parent_ || !win_) return;
+        RECT rc{};
+        if (!GetClientRect(parent_, &rc)) return;
+        const int w = int(rc.right), h = int(rc.bottom);
+        if (w <= 0 || h <= 0) return;
+        RECT own{};
+        if (!GetClientRect(win_, &own) || int(own.right - own.left) != w ||
+            int(own.bottom - own.top) != h) {
+            // WM_SIZE volta por esta mesma thread e o painel adota o tamanho la.
+            SetWindowPos(win_, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if ((w < kWinW || h < kWinH) && pedidosDeTamanho_ < 3) pedirTamanho();
+    }
+
     // O pedido de dialogo nasce num handler de mouse/tecla e tem de ser executado
     // FORA do lock: GetOpenFileName fica minutos aberto e roda o proprio laco de
     // mensagens, e com a trava tomada todo port_event vindo do plugin pararia junto.
@@ -381,6 +420,10 @@ private:
         ShowWindow(win_, embedded ? SW_SHOW : SW_SHOWNORMAL);
         needDraw_ = true;
         syncTimer();
+        // O pedido de tamanho sai daqui, e nao do descriptor do LV2: quem sabe qual
+        // container pode crescer e o backend, e o pedido PRECISA se repetir (ver
+        // seguirContainer()).
+        pedirTamanho();
     }
 
     // Roda na thread que criou tudo: janela, DIB e DC.
@@ -433,6 +476,7 @@ private:
             }
             case WM_TIMER: {
                 if (w == kPollTimer) {
+                    seguirContainer();   // o host pode ter crescido o container dele
                     serviceFrame();      // 5 Hz: automacao/estado do VST3
                     return 0;
                 }
@@ -547,6 +591,8 @@ private:
     wchar_t pendingSurrogate_ = 0;
     bool coMine_ = false;        // o CoInitializeEx desta thread foi nosso
     bool loggedDraw_ = false;
+    const LV2UI_Resize* resize_ = nullptr;   // ui:resize do host, se ele ofereceu
+    int pedidosDeTamanho_ = 0;               // teto: nao insistir num host que recusa
 };
 
 } // namespace pfui
@@ -557,9 +603,9 @@ private:
 namespace pfui {
 
 ForgeUi* createUi(void* parent, const char* bundlePath, LV2UI_Write_Function write,
-                  LV2UI_Controller controller, void** widgetOut) {
+                  LV2UI_Controller controller, void** widgetOut, const LV2UI_Resize* resize) {
     auto* ui = new Win32ForgeUi(reinterpret_cast<HWND>(parent), bundlePath ? bundlePath : "",
-                                write, controller);
+                                write, controller, resize);
     if (!ui->widget()) {
         // Devolver um objeto sem HWND daria ao host uma area vazia para embutir e
         // um cleanup que passa pelo DestroyWindow de uma janela que nao existe.
@@ -604,14 +650,12 @@ LV2UI_Handle uiInstantiate(const LV2UI_Descriptor*,
     }
 
     void* native = nullptr;
-    pfui::ForgeUi* ui = pfui::createUi(parent, bundlePath, writeFunction, controller, &native);
+    // O resize vai para o backend, que e quem fala com o container: aqui e la o
+    // pedido nao pode ser um tiro unico -- ver Win32ForgeUi::seguirContainer().
+    pfui::ForgeUi* ui =
+        pfui::createUi(parent, bundlePath, writeFunction, controller, &native, resize);
     if (!ui) return nullptr;
     *widget = reinterpret_cast<LV2UI_Widget>(reinterpret_cast<uintptr_t>(native));
-    // Sem pedir o tamanho, um host que hospeda a UI numa aba nao tem como saber
-    // 1000x520 e deixa o container do tamanho dele.
-    if (resize && resize->ui_resize)
-        resize->ui_resize(resize->handle, pfui::ForgeUi::preferredWidth(),
-                          pfui::ForgeUi::preferredHeight());
     return ui;
 }
 

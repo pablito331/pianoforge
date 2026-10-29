@@ -525,6 +525,74 @@ bool testAudio(Plugin& p, const char* bankPath) {
     return peak > 0.01f;
 }
 
+// --------------------------------------------------------------- captura
+#if defined(_WIN32)
+// Blit do filho para um DIB e a faixa do canal verde. Uma janela criada e nunca
+// pintada e uniforme (preta); um painel de verdade tem anel, texto e brasa.
+struct Captura {
+    int lo = 255, hi = 0, linhas = 0;
+    bool pintou() const { return linhas > 0 && (hi - lo) > 8; }
+};
+
+Captura capturarPainel(HWND child) {
+    Captura c;
+    RECT cr{};
+    GetClientRect(child, &cr);
+    const int w = int(cr.right - cr.left), h = int(cr.bottom - cr.top);
+    if (w <= 0 || h <= 0) return c;
+    std::vector<uint32_t> pix(size_t(w) * size_t(h), 0);
+    HDC childDc = GetDC(child);
+    HDC memDc = CreateCompatibleDC(childDc);
+    HBITMAP bmp = CreateCompatibleBitmap(childDc, w, h);
+    HGDIOBJ old = SelectObject(memDc, bmp);
+    BitBlt(memDc, 0, 0, w, h, childDc, 0, 0, SRCCOPY);
+
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;      // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    c.linhas = GetDIBits(memDc, bmp, 0, UINT(h), pix.data(), &bi, DIB_RGB_COLORS);
+
+    SelectObject(memDc, old);
+    DeleteObject(bmp);
+    DeleteDC(memDc);
+    ReleaseDC(child, childDc);
+
+    if (c.linhas <= 0) return c;
+    for (uint32_t px : pix) {
+        const int v = int((px >> 8) & 0xff);   // canal verde
+        c.lo = std::min(c.lo, v);
+        c.hi = std::max(c.hi, v);
+    }
+    return c;
+}
+
+// O primeiro filho do container e o painel: o backend cria uma janela so.
+HWND painelDentroDe(HWND host) {
+    HWND child = nullptr;
+    EnumChildWindows(host, [](HWND h, LPARAM p) -> BOOL {
+        *reinterpret_cast<HWND*>(p) = h;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&child));
+    return child;
+}
+
+// Bombeia a fila do host de verdade: os timers do painel so disparam aqui.
+void bombear(int ms) {
+    for (int i = 0; i < ms / 10; ++i) {
+        MSG msg{};
+        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+#endif
+
 // ------------------------------------------------------------------ F: view
 bool testView(Plugin& p) {
     IPlugView* view = p.controller->createView(Vst::ViewType::kEditor);
@@ -572,23 +640,12 @@ bool testView(Plugin& p) {
     UpdateWindow(host);
 
     // Deixa o painel pintar: WM_PAINT chega pelo bombeamento da fila.
-    for (int i = 0; i < 40; ++i) {
-        MSG msg{};
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessageA(&msg);
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    bombear(400);
 
     // A prova visual: o filho existe e os pixels nao sao uniformes. Uma janela
     // criada e nunca pintada e preta/uniforme -- e essa e a falha que aconteceu
     // de verdade no backend Win32 antes da correcao de thread.
-    HWND child = nullptr;
-    EnumChildWindows(host, [](HWND h, LPARAM p) -> BOOL {
-        *reinterpret_cast<HWND*>(p) = h;
-        return FALSE;
-    }, reinterpret_cast<LPARAM>(&child));
+    HWND child = painelDentroDe(host);
     expect(child != nullptr, "F: painel criado dentro da janela do host");
 
     if (child) {
@@ -600,40 +657,9 @@ bool testView(Plugin& p) {
              long(cr.bottom - cr.top));
         expect(cr.right - cr.left > 200 && cr.bottom - cr.top > 200, "F: painel com tamanho real");
 
-        const int w = int(cr.right - cr.left), h = int(cr.bottom - cr.top);
-        std::vector<uint32_t> pix(size_t(w) * size_t(h), 0);
-        HDC childDc = GetDC(child);
-        HDC memDc = CreateCompatibleDC(childDc);
-        HBITMAP bmp = CreateCompatibleBitmap(childDc, w, h);
-        HGDIOBJ old = SelectObject(memDc, bmp);
-        BitBlt(memDc, 0, 0, w, h, childDc, 0, 0, SRCCOPY);
-
-        BITMAPINFO bi{};
-        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = w;
-        bi.bmiHeader.biHeight = -h;      // top-down
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        const int lines = GetDIBits(memDc, bmp, 0, UINT(h), pix.data(), &bi, DIB_RGB_COLORS);
-
-        SelectObject(memDc, old);
-        DeleteObject(bmp);
-        DeleteDC(memDc);
-        ReleaseDC(child, childDc);
-
-        int lo = 255, hi = 0, nonBlack = 0;
-        if (lines > 0) {
-            for (uint32_t px : pix) {
-                const int v = int((px >> 8) & 0xff);   // canal verde
-                lo = std::min(lo, v);
-                hi = std::max(hi, v);
-                if ((px & 0x00ffffffu) != 0) ++nonBlack;
-            }
-        }
-        note("pixels: canal verde de %d a %d, %d nao-preto(s) de %zu (%d linha(s) lidas)", lo,
-             hi, nonBlack, pix.size(), lines);
-        expect(lines > 0 && (hi - lo) > 8, "F: o painel pintou (pixels nao uniformes)");
+        const Captura cap = capturarPainel(child);
+        note("pixels: canal verde de %d a %d (%d linha(s) lidas)", cap.lo, cap.hi, cap.linhas);
+        expect(cap.pintou(), "F: o painel pintou (pixels nao uniformes)");
     }
 
     view->removed();
@@ -642,6 +668,73 @@ bool testView(Plugin& p) {
     return true;
 #else
     note("painel: attached/pixels so no Windows neste probe (X11 pediria Xvfb)");
+    view->release();
+    return true;
+#endif
+}
+
+// -------------------------------------------------- G: container apertado
+// O REAPER 7.83 entrega ui:parent com 65x86 (o placeholder dele) e cresce o
+// container quando aplica o ui:resize. Um painel que adota o tamanho visto no
+// instantiate e para fica espremido num canto para sempre -- foi o que apareceu
+// como "o LV2 abriu minusculo". Aqui o host se comporta do mesmo jeito: container
+// pequeno, attached, e o container cresce 400 ms depois.
+bool testContainerApertado(Plugin& p) {
+#if !defined(_WIN32)
+    note("G: container apertado so no Win32 (no X11 o host redimensiona o filho");
+    return true;
+#else
+    IPlugView* view = p.controller->createView(Vst::ViewType::kEditor);
+    if (!expect(view != nullptr, "G: createView(kEditor) para o container apertado")) return false;
+
+    WNDCLASSA wc{};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(nullptr);
+    wc.lpszClassName = "PianoForgeProbeSqueeze";
+    RegisterClassA(&wc);
+    // WS_POPUP para o cliente ter exatamente 65x86, sem moldura: e a medida do
+    // ui:parent que o REAPER entrega no Windows.
+    HWND host = CreateWindowExA(0, wc.lpszClassName, "apertado", WS_POPUP, 0, 0, 65, 86,
+                                nullptr, nullptr, wc.hInstance, nullptr);
+    if (!expect(host != nullptr, "G: container de 65x86")) {
+        view->release();
+        return false;
+    }
+    ShowWindow(host, SW_SHOWNA);
+
+    expect(view->attached(host, kPlatformTypeHWND) == kResultOk, "G: attached no container pequeno");
+    bombear(400);                    // dois tiques do relogio lento (200 ms)
+
+    HWND child = painelDentroDe(host);
+    if (!expect(child != nullptr, "G: painel criado dentro do container apertado")) {
+        view->removed();
+        DestroyWindow(host);
+        view->release();
+        return false;
+    }
+    RECT antes{};
+    GetClientRect(child, &antes);
+    note("G: painel num container de 65x86: %ldx%ld", long(antes.right - antes.left),
+         long(antes.bottom - antes.top));
+
+    // O host cresce o container. Para o painel e o mesmo que um WM_SIZE do
+    // container do DAW: o filho NAO acompanha sozinho, e o conserto e o relogio
+    // lento conferir o cliente do pai.
+    SetWindowPos(host, nullptr, 0, 0, 1000, 520, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    bombear(600);                    // tres tiques
+
+    RECT depois{};
+    GetClientRect(child, &depois);
+    const long w = depois.right - depois.left, h = depois.bottom - depois.top;
+    note("G: depois de o host crescer para 1000x520, o painel ficou %ldx%ld", w, h);
+    expect(w >= 900 && h >= 460, "G: o painel acompanhou o container que cresceu depois");
+
+    const Captura cap = capturarPainel(child);
+    note("G: pixels do painel grande: canal verde de %d a %d", cap.lo, cap.hi);
+    expect(cap.pintou(), "G: o painel repintou no tamanho novo");
+
+    view->removed();
+    DestroyWindow(host);
     view->release();
     return true;
 #endif
@@ -717,7 +810,10 @@ int main(int argc, char** argv) {
 
     testState(plugin, plugin.factory, classId, sf2.c_str());
     testAudio(plugin, sf2.c_str());
-    if (wantUi) testView(plugin);
+    if (wantUi) {
+        testView(plugin);
+        testContainerApertado(plugin);
+    }
 
     plugin.unload();
 
